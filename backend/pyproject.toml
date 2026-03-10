@@ -1,0 +1,26 @@
+[project]
+name = "pm-backend"
+version = "0.1.0"
+description = "FastAPI backend for the Project Management MVP"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.121.0",
+  "uvicorn>=0.38.0",
+]
+
+[dependency-groups]
+dev = [
+  "httpx>=0.28.0",
+  "pytest>=8.4.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
