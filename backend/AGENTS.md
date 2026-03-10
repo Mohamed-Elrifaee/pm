@@ -19,6 +19,8 @@ This directory contains the FastAPI backend for the Project Management MVP.
 - `GET /api/session`: returns authentication state from signed session cookie
 - `POST /api/login`: validates hardcoded credentials and sets session cookie
 - `POST /api/logout`: clears session cookie/session state
+- `GET /api/board`: returns authenticated user's board from SQLite (creates default if missing)
+- `PUT /api/board`: validates and stores authenticated user's board in SQLite
 
 ## Testing
 
@@ -26,6 +28,8 @@ This directory contains the FastAPI backend for the Project Management MVP.
 - Current tests validate:
   - HTML root page is served
   - Health endpoint response
+  - Login/session/logout behavior
+  - Board auth requirements, validation, and persistence behavior
 
 ## Notes for Future Work
 
