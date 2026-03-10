@@ -133,6 +133,7 @@ Define and document SQLite persistence model for Kanban board JSON per user, and
 
 ### Dependencies/Notes
 - Sign-off checkpoint before moving to Part 6 implementation
+- Part 5 documentation source: `pm/docs/DATABASE_MODEL.md`
 
 ## Part 6: Backend API for Kanban
 
