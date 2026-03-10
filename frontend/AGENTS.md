@@ -25,12 +25,18 @@ This file defines the current frontend baseline in `pm/frontend/`. Use it as the
 - Board data source is backend API:
   - `GET /api/board` on authenticated load
   - `PUT /api/board` after board interactions
+- AI chat data source is backend API:
+  - `POST /api/chat` with `message` + `history`
+  - Returns `message`, `operations`, `board`, `version`
 - Current UX is a single-board Kanban experience with five columns.
 - Supported in current UI:
   - Rename column titles inline
   - Add cards (title + optional details)
   - Delete cards
   - Move cards within and across columns with drag-and-drop
+  - Chat with AI assistant in sidebar
+  - Apply AI-returned board operations automatically to current board
+  - Show chat errors without breaking board interactions
 - Board state displayed in UI is backend-backed (SQLite via backend API) once user signs in.
 
 ## Current Data Model
@@ -71,10 +77,12 @@ Current tested behaviors include:
 - Login screen when unauthenticated
 - Successful sign-in and logout flow
 - Board persistence through backend-backed save/load
+- AI chat request/response rendering and board auto-update
 - Rendering board/columns
 - Renaming a column
 - Adding/removing cards
 - Dragging cards between columns (including into empty columns) (e2e)
+- Chat operation success and failure flows (e2e)
 
 ## Constraints for Future Changes
 

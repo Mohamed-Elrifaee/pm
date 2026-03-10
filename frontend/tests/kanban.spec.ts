@@ -74,7 +74,11 @@ const createInitialBoard = (): BoardData => ({
   },
 });
 
-const installAuthMocks = async (page: Page) => {
+type MockOptions = {
+  failChat?: boolean;
+};
+
+const installAuthMocks = async (page: Page, options: MockOptions = {}) => {
   const state: SessionState = { authenticated: false, username: null };
   let board: BoardData = createInitialBoard();
   let version = 1;
@@ -158,6 +162,93 @@ const installAuthMocks = async (page: Page) => {
       status: 405,
       contentType: "application/json",
       body: JSON.stringify({ detail: "Method not allowed" }),
+    });
+  });
+
+  await page.route("**/api/chat", async (route) => {
+    if (!state.authenticated) {
+      await route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "Unauthorized" }),
+      });
+      return;
+    }
+
+    if (options.failChat) {
+      await route.fulfill({
+        status: 502,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "Upstream failure" }),
+      });
+      return;
+    }
+
+    const payload = route.request().postDataJSON() as {
+      message?: string;
+    };
+
+    if (route.request().method() !== "POST") {
+      await route.fulfill({
+        status: 405,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "Method not allowed" }),
+      });
+      return;
+    }
+
+    const normalizedMessage = (payload.message ?? "").toLowerCase();
+    if (normalizedMessage.includes("weekly report")) {
+      const cardId = `card-ai-${version + 1}`;
+      board = {
+        ...board,
+        columns: board.columns.map((column) =>
+          column.id === "col-backlog"
+            ? { ...column, cardIds: [cardId, ...column.cardIds] }
+            : column
+        ),
+        cards: {
+          ...board.cards,
+          [cardId]: {
+            id: cardId,
+            title: "AI weekly report",
+            details: "Added by chat assistant.",
+          },
+        },
+      };
+      version += 1;
+
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          message: "Created task in Backlog",
+          operations: [
+            {
+              type: "create",
+              cardId,
+              title: "AI weekly report",
+              details: "Added by chat assistant.",
+              columnId: "col-backlog",
+              index: 0,
+            },
+          ],
+          board,
+          version,
+        }),
+      });
+      return;
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        message: "No board changes required.",
+        operations: [],
+        board,
+        version,
+      }),
     });
   });
 };
@@ -290,4 +381,30 @@ test("keeps board changes after page reload", async ({ page }) => {
 
   await page.reload();
   await expect(page.getByText("Reload card")).toBeVisible();
+});
+
+test("applies AI chat operations and updates the board automatically", async ({ page }) => {
+  await installAuthMocks(page);
+  await page.goto("/");
+  await login(page);
+
+  await page.getByLabel("AI message").fill("Create a weekly report card in backlog");
+  await page.getByRole("button", { name: /^send$/i }).click();
+
+  await expect(page.getByText("Created task in Backlog")).toBeVisible();
+  await expect(page.getByText("AI weekly report")).toBeVisible();
+});
+
+test("shows chat error and keeps board usable when AI call fails", async ({ page }) => {
+  await installAuthMocks(page, { failChat: true });
+  await page.goto("/");
+  await login(page);
+
+  await page.getByLabel("AI message").fill("Create a weekly report card in backlog");
+  await page.getByRole("button", { name: /^send$/i }).click();
+
+  await expect(
+    page.getByText("Unable to get AI response right now. Please try again.")
+  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Kanban Studio" })).toBeVisible();
 });

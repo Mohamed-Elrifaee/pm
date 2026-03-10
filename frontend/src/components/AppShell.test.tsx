@@ -20,6 +20,21 @@ const createBoardPayload = () => ({
   version: 1,
 });
 
+const createBoardPayloadWithAICard = () => {
+  const board = JSON.parse(JSON.stringify(initialData));
+  board.cards["card-ai-1"] = {
+    id: "card-ai-1",
+    title: "AI weekly report",
+    details: "Added by assistant",
+  };
+  board.columns[0].cardIds = ["card-ai-1", ...board.columns[0].cardIds];
+
+  return {
+    board,
+    version: 2,
+  };
+};
+
 describe("AppShell", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -106,6 +121,92 @@ describe("AppShell", () => {
 
     await waitFor(() =>
       expect(screen.getByRole("heading", { name: /sign in/i })).toBeInTheDocument()
+    );
+  });
+
+  it("sends chat request and applies returned board updates", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = input.toString();
+
+      if (url.includes("/api/session")) {
+        return createJsonResponse(200, { authenticated: true, username: "user" });
+      }
+
+      if (url.includes("/api/board")) {
+        return createJsonResponse(200, createBoardPayload());
+      }
+
+      if (url.includes("/api/chat")) {
+        return createJsonResponse(200, {
+          message: "Created task in Backlog",
+          operations: [
+            {
+              type: "create",
+              cardId: "card-ai-1",
+              title: "AI weekly report",
+              details: "Added by assistant",
+              columnId: "col-backlog",
+              index: 0,
+            },
+          ],
+          ...createBoardPayloadWithAICard(),
+        });
+      }
+
+      throw new Error(`Unhandled fetch URL in test: ${url}`);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AppShell />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "Kanban Studio" })).toBeInTheDocument()
+    );
+
+    await userEvent.type(screen.getByLabelText(/ai message/i), "Create weekly report task");
+    await userEvent.click(screen.getByRole("button", { name: /^send$/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText("Created task in Backlog")).toBeInTheDocument()
+    );
+    expect(screen.getByText("AI weekly report")).toBeInTheDocument();
+  });
+
+  it("shows chat error when chat API fails", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = input.toString();
+
+      if (url.includes("/api/session")) {
+        return createJsonResponse(200, { authenticated: true, username: "user" });
+      }
+
+      if (url.includes("/api/board")) {
+        return createJsonResponse(200, createBoardPayload());
+      }
+
+      if (url.includes("/api/chat")) {
+        return createJsonResponse(502, { detail: "Upstream failure" });
+      }
+
+      throw new Error(`Unhandled fetch URL in test: ${url}`);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AppShell />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "Kanban Studio" })).toBeInTheDocument()
+    );
+
+    await userEvent.type(screen.getByLabelText(/ai message/i), "Move card-1 to review");
+    await userEvent.click(screen.getByRole("button", { name: /^send$/i }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("Unable to get AI response right now. Please try again.")
+      ).toBeInTheDocument()
     );
   });
 });

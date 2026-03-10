@@ -1,6 +1,11 @@
 "use client";
 
 import { useEffect, useState, type FormEvent } from "react";
+import {
+  ChatSidebar,
+  type ChatMessage,
+  type ChatOperation,
+} from "@/components/ChatSidebar";
 import { KanbanBoard } from "@/components/KanbanBoard";
 import type { BoardData } from "@/lib/kanban";
 
@@ -15,6 +20,18 @@ type LoginState = {
 };
 
 type BoardResponse = {
+  board: BoardData;
+  version: number;
+};
+
+type ChatHistoryItem = {
+  role: "user" | "assistant";
+  content: string;
+};
+
+type ChatResponse = {
+  message: string;
+  operations: ChatOperation[];
   board: BoardData;
   version: number;
 };
@@ -67,6 +84,29 @@ const writeBoard = async (board: BoardData): Promise<BoardResponse> => {
   return response.json();
 };
 
+const sendChatMessage = async (
+  message: string,
+  history: ChatHistoryItem[]
+): Promise<ChatResponse> => {
+  const response = await fetch("/api/chat", {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ message, history }),
+  });
+
+  if (!response.ok) {
+    throw new Error("Failed to get AI response.");
+  }
+
+  return response.json();
+};
+
+const createMessageId = (): string =>
+  `msg-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
 export const AppShell = () => {
   const [session, setSession] = useState<SessionResponse | null>(null);
   const [isCheckingSession, setIsCheckingSession] = useState(true);
@@ -77,6 +117,10 @@ export const AppShell = () => {
   const [isBoardLoading, setIsBoardLoading] = useState(false);
   const [isBoardSaving, setIsBoardSaving] = useState(false);
   const [boardError, setBoardError] = useState<string | null>(null);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatDraft, setChatDraft] = useState("");
+  const [chatError, setChatError] = useState<string | null>(null);
+  const [isChatSubmitting, setIsChatSubmitting] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -124,6 +168,10 @@ export const AppShell = () => {
     if (!session?.authenticated) {
       setBoard(null);
       setBoardError(null);
+      setChatMessages([]);
+      setChatDraft("");
+      setChatError(null);
+      setIsChatSubmitting(false);
       return;
     }
 
@@ -173,6 +221,10 @@ export const AppShell = () => {
       setSession({ authenticated: false, username: null });
       setBoard(null);
       setBoardError(null);
+      setChatMessages([]);
+      setChatDraft("");
+      setChatError(null);
+      setIsChatSubmitting(false);
       setIsSubmitting(false);
     }
   };
@@ -195,6 +247,53 @@ export const AppShell = () => {
       setBoardError("We could not save this change. Please try again.");
     } finally {
       setIsBoardSaving(false);
+    }
+  };
+
+  const handleChatSubmit = async () => {
+    if (!board) {
+      return;
+    }
+
+    const trimmedMessage = chatDraft.trim();
+    if (!trimmedMessage) {
+      return;
+    }
+
+    const history: ChatHistoryItem[] = chatMessages.map((message) => ({
+      role: message.role,
+      content: message.content,
+    }));
+
+    const userMessage: ChatMessage = {
+      id: createMessageId(),
+      role: "user",
+      content: trimmedMessage,
+    };
+
+    setChatMessages((prev) => [...prev, userMessage]);
+    setChatDraft("");
+    setChatError(null);
+    setIsChatSubmitting(true);
+
+    try {
+      const response = await sendChatMessage(trimmedMessage, history);
+      setBoard(response.board);
+      setBoardError(null);
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: createMessageId(),
+          role: "assistant",
+          content: response.message,
+          operations: response.operations,
+        },
+      ]);
+    } catch {
+      setChatDraft(trimmedMessage);
+      setChatError("Unable to get AI response right now. Please try again.");
+    } finally {
+      setIsChatSubmitting(false);
     }
   };
 
@@ -241,6 +340,16 @@ export const AppShell = () => {
         onBoardChange={(next) => void handleBoardChange(next)}
         boardError={boardError}
         isSavingBoard={isBoardSaving}
+        chatSidebar={
+          <ChatSidebar
+            messages={chatMessages}
+            draft={chatDraft}
+            isSubmitting={isChatSubmitting}
+            error={chatError}
+            onDraftChange={setChatDraft}
+            onSubmit={() => void handleChatSubmit()}
+          />
+        }
       />
     );
   }

@@ -21,7 +21,11 @@ This directory contains the FastAPI backend for the Project Management MVP.
 - `POST /api/logout`: clears session cookie/session state
 - `GET /api/board`: returns authenticated user's board from SQLite (creates default if missing)
 - `PUT /api/board`: validates and stores authenticated user's board in SQLite
-- `POST /api/chat`: authenticated OpenRouter call, returns assistant `message` and `operations` (currently empty list)
+- `POST /api/chat`: authenticated OpenRouter call using board context + history; returns structured payload:
+  - `message`: assistant reply text
+  - `operations`: applied board operations (`create`, `edit`, `move`, `delete`)
+  - `board`: updated board state
+  - `version`: updated board version
 
 ## Testing
 
@@ -32,6 +36,7 @@ This directory contains the FastAPI backend for the Project Management MVP.
   - Login/session/logout behavior
   - Board auth requirements, validation, and persistence behavior
   - OpenRouter client request/parse behavior and chat route error mapping
+  - Structured AI parsing and operation execution (`create/edit/move/delete`)
 
 ## Notes for Future Work
 

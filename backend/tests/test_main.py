@@ -158,23 +158,34 @@ def test_chat_route_requires_authentication() -> None:
 
 
 def test_chat_route_returns_message_and_empty_operations(
+    isolated_db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("app.main.request_chat_completion", lambda _: "4")
+    monkeypatch.setattr(
+        "app.chat_service.request_chat_completion",
+        lambda _: '{"message":"4","operations":[]}',
+    )
 
     client = TestClient(app)
     login(client)
 
     response = client.post("/api/chat", json={"message": "2+2"})
     assert response.status_code == 200
-    assert response.json() == {"message": "4", "operations": []}
+    payload = response.json()
+    assert payload["message"] == "4"
+    assert payload["operations"] == []
+    assert "board" in payload
+    assert payload["version"] == 1
 
 
-def test_chat_route_maps_missing_key_to_500(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_chat_route_maps_missing_key_to_500(
+    isolated_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def raise_config_error(_: str) -> str:
         raise AIClientConfigError("OPENROUTER_API_KEY is not configured.")
 
-    monkeypatch.setattr("app.main.request_chat_completion", raise_config_error)
+    monkeypatch.setattr("app.chat_service.request_chat_completion", raise_config_error)
 
     client = TestClient(app)
     login(client)
@@ -185,12 +196,13 @@ def test_chat_route_maps_missing_key_to_500(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_chat_route_maps_upstream_failure_to_502(
+    isolated_db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def raise_upstream_error(_: str) -> str:
         raise AIClientUpstreamError("OpenRouter request failed with status 401.")
 
-    monkeypatch.setattr("app.main.request_chat_completion", raise_upstream_error)
+    monkeypatch.setattr("app.chat_service.request_chat_completion", raise_upstream_error)
 
     client = TestClient(app)
     login(client)
@@ -198,3 +210,51 @@ def test_chat_route_maps_upstream_failure_to_502(
     response = client.post("/api/chat", json={"message": "2+2"})
     assert response.status_code == 502
     assert response.json() == {"detail": "OpenRouter request failed with status 401."}
+
+
+def test_chat_route_rejects_invalid_structured_response(
+    isolated_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.chat_service.request_chat_completion", lambda _: "not json")
+
+    client = TestClient(app)
+    login(client)
+
+    response = client.post("/api/chat", json={"message": "create a card"})
+    assert response.status_code == 502
+    assert response.json() == {"detail": "AI response is not JSON."}
+
+
+def test_chat_route_applies_operations_and_persists_board(
+    isolated_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.chat_service.request_chat_completion",
+        lambda _: (
+            '{"message":"Created one card","operations":'
+            '[{"type":"create","title":"AI Card","details":"from ai","columnId":"col-backlog"}]}'
+        ),
+    )
+
+    client = TestClient(app)
+    login(client)
+
+    before = client.get("/api/board").json()
+    assert before["version"] == 1
+
+    chat_response = client.post("/api/chat", json={"message": "create a card in backlog"})
+    assert chat_response.status_code == 200
+    chat_payload = chat_response.json()
+    assert chat_payload["message"] == "Created one card"
+    assert chat_payload["version"] == 2
+    assert len(chat_payload["operations"]) == 1
+    created_operation = chat_payload["operations"][0]
+    assert created_operation["type"] == "create"
+
+    card_id = created_operation["cardId"]
+    persisted = client.get("/api/board").json()
+    assert persisted["version"] == 2
+    assert card_id in persisted["board"]["cards"]
+    assert persisted["board"]["cards"][card_id]["title"] == "AI Card"

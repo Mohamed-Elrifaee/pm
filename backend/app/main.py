@@ -2,14 +2,15 @@ import os
 import logging
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 from fastapi.staticfiles import StaticFiles
-from app.ai_client import AIClientConfigError, AIClientUpstreamError, request_chat_completion
+from app.ai_client import AIClientConfigError, AIClientUpstreamError
 from app.board_store import BoardStoreError, get_or_create_board_for_user, save_board_for_user
+from app.chat_service import ChatOperationError, ChatResponseFormatError, process_chat_request
 
 app = FastAPI(title="Project Management MVP API")
 logger = logging.getLogger(__name__)
@@ -41,8 +42,14 @@ class BoardPayload(BaseModel):
     cards: dict[str, CardPayload]
 
 
+class ChatHistoryItem(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1)
+
+
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
+    history: list[ChatHistoryItem] = Field(default_factory=list, max_length=20)
 
 
 app.add_middleware(
@@ -174,23 +181,34 @@ def write_board(payload: BoardPayload, request: Request) -> dict[str, Any]:
 
 @app.post("/api/chat")
 def chat(payload: ChatRequest, request: Request) -> dict[str, Any]:
-    _get_authenticated_username(request)
+    username = _get_authenticated_username(request)
 
     try:
-        assistant_message = request_chat_completion(payload.message)
+        history = [item.model_dump() for item in payload.history]
+        response_payload = process_chat_request(
+            username=username,
+            user_message=payload.message,
+            history=history,
+        )
     except AIClientConfigError as error:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(error),
         ) from None
-    except AIClientUpstreamError as error:
+    except (AIClientUpstreamError, ChatResponseFormatError, ChatOperationError) as error:
         logger.exception("OpenRouter request failed.")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=str(error),
         ) from None
+    except BoardStoreError:
+        logger.exception("Database operation failed during chat processing.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database operation failed",
+        ) from None
 
-    return {"message": assistant_message, "operations": []}
+    return response_payload
 
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
