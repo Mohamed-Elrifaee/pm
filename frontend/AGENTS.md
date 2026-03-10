@@ -17,14 +17,18 @@ This file defines the current frontend baseline in `pm/frontend/`. Use it as the
 
 ## Current Feature Behavior
 
-- App entrypoint at `src/app/page.tsx` renders `KanbanBoard`.
+- App entrypoint at `src/app/page.tsx` renders `AppShell`.
+- `AppShell` checks `GET /api/session` and gates access to the board.
+- Login uses hardcoded credentials via backend API:
+  - `POST /api/login`
+  - `POST /api/logout`
 - Current UX is a single-board Kanban experience with five columns.
 - Supported in current UI:
   - Rename column titles inline
   - Add cards (title + optional details)
   - Delete cards
   - Move cards within and across columns with drag-and-drop
-- Current board state is frontend local state (in-memory), not backend-persistent yet.
+- Current board state is saved in browser `localStorage` per username (`kanban-board:<username>`), so local changes survive logout/login for the same browser user.
 
 ## Current Data Model
 
@@ -61,10 +65,12 @@ Utility behavior currently includes:
 
 Current tested behaviors include:
 
+- Login screen when unauthenticated
+- Successful sign-in and logout flow
 - Rendering board/columns
 - Renaming a column
 - Adding/removing cards
-- Dragging cards between columns (e2e)
+- Dragging cards between columns (including into empty columns) (e2e)
 
 ## Constraints for Future Changes
 

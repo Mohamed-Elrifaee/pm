@@ -16,6 +16,9 @@ This directory contains the FastAPI backend for the Project Management MVP.
 
 - `GET /`: serves static frontend build assets from `backend/static/`
 - `GET /api/health`: returns `{ "status": "ok" }`
+- `GET /api/session`: returns authentication state from signed session cookie
+- `POST /api/login`: validates hardcoded credentials and sets session cookie
+- `POST /api/logout`: clears session cookie/session state
 
 ## Testing
 
@@ -28,4 +31,5 @@ This directory contains the FastAPI backend for the Project Management MVP.
 
 - Keep API under `/api/*`.
 - Keep root (`/`) owned by frontend/static serving behavior per project plan.
+- Current auth credentials are fixed to `user` / `password` for MVP.
 - Extend this file when auth, DB, and AI functionality are introduced.

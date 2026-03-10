@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
+  pointerWithin,
   DndContext,
   DragOverlay,
   PointerSensor,
@@ -10,13 +11,58 @@ import {
   closestCorners,
   type DragEndEvent,
   type DragStartEvent,
+  type CollisionDetection,
 } from "@dnd-kit/core";
 import { KanbanColumn } from "@/components/KanbanColumn";
 import { KanbanCardPreview } from "@/components/KanbanCardPreview";
 import { createId, initialData, moveCard, type BoardData } from "@/lib/kanban";
 
-export const KanbanBoard = () => {
-  const [board, setBoard] = useState<BoardData>(() => initialData);
+type KanbanBoardProps = {
+  onLogout?: () => void;
+  username?: string | null;
+};
+
+const makeStorageKey = (username: string) => `kanban-board:${username}`;
+
+const cloneInitialBoard = (): BoardData => ({
+  columns: initialData.columns.map((column) => ({
+    ...column,
+    cardIds: [...column.cardIds],
+  })),
+  cards: Object.fromEntries(
+    Object.entries(initialData.cards).map(([id, card]) => [id, { ...card }])
+  ),
+});
+
+const isBoardData = (value: unknown): value is BoardData => {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Partial<BoardData>;
+  return Array.isArray(candidate.columns) && typeof candidate.cards === "object";
+};
+
+const readBoardFromStorage = (username?: string | null): BoardData => {
+  if (!username || typeof window === "undefined") {
+    return cloneInitialBoard();
+  }
+
+  try {
+    const raw = window.localStorage.getItem(makeStorageKey(username));
+    if (!raw) {
+      return cloneInitialBoard();
+    }
+
+    const parsed = JSON.parse(raw) as unknown;
+    return isBoardData(parsed) ? parsed : cloneInitialBoard();
+  } catch {
+    return cloneInitialBoard();
+  }
+};
+
+export const KanbanBoard = ({ onLogout, username }: KanbanBoardProps) => {
+  const [board, setBoard] = useState<BoardData>(() => readBoardFromStorage(username));
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
 
   const sensors = useSensors(
@@ -26,6 +72,14 @@ export const KanbanBoard = () => {
   );
 
   const cardsById = useMemo(() => board.cards, [board.cards]);
+
+  const collisionDetection: CollisionDetection = (args) => {
+    const pointerCollisions = pointerWithin(args);
+    if (pointerCollisions.length > 0) {
+      return pointerCollisions;
+    }
+    return closestCorners(args);
+  };
 
   const handleDragStart = (event: DragStartEvent) => {
     setActiveCardId(event.active.id as string);
@@ -91,6 +145,22 @@ export const KanbanBoard = () => {
 
   const activeCard = activeCardId ? cardsById[activeCardId] : null;
 
+  useEffect(() => {
+    setBoard(readBoardFromStorage(username));
+  }, [username]);
+
+  useEffect(() => {
+    if (!username) {
+      return;
+    }
+
+    try {
+      window.localStorage.setItem(makeStorageKey(username), JSON.stringify(board));
+    } catch {
+      // Ignore storage failures so board interactions remain usable.
+    }
+  }, [board, username]);
+
   return (
     <div className="relative overflow-hidden">
       <div className="pointer-events-none absolute left-0 top-0 h-[420px] w-[420px] -translate-x-1/3 -translate-y-1/3 rounded-full bg-[radial-gradient(circle,_rgba(32,157,215,0.25)_0%,_rgba(32,157,215,0.05)_55%,_transparent_70%)]" />
@@ -118,6 +188,20 @@ export const KanbanBoard = () => {
               <p className="mt-2 text-lg font-semibold text-[var(--primary-blue)]">
                 One board. Five columns. Zero clutter.
               </p>
+              {username ? (
+                <p className="mt-2 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]">
+                  Signed in as {username}
+                </p>
+              ) : null}
+              {onLogout ? (
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  className="mt-3 rounded-full border border-[var(--stroke)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--navy-dark)] transition hover:border-[var(--primary-blue)] hover:text-[var(--primary-blue)]"
+                >
+                  Log out
+                </button>
+              ) : null}
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-4">
@@ -135,7 +219,7 @@ export const KanbanBoard = () => {
 
         <DndContext
           sensors={sensors}
-          collisionDetection={closestCorners}
+          collisionDetection={collisionDetection}
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
         >
