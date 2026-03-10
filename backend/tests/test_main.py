@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from app.ai_client import AIClientConfigError, AIClientUpstreamError
 from app.main import app
 
 
@@ -147,3 +148,53 @@ def test_board_data_persists_across_clients(isolated_db_path: Path) -> None:
     persisted_response = second_client.get("/api/board")
     assert persisted_response.status_code == 200
     assert persisted_response.json()["board"]["columns"][0]["title"] == "Persistent Title"
+
+
+def test_chat_route_requires_authentication() -> None:
+    client = TestClient(app)
+    response = client.post("/api/chat", json={"message": "2+2"})
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Unauthorized"}
+
+
+def test_chat_route_returns_message_and_empty_operations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.main.request_chat_completion", lambda _: "4")
+
+    client = TestClient(app)
+    login(client)
+
+    response = client.post("/api/chat", json={"message": "2+2"})
+    assert response.status_code == 200
+    assert response.json() == {"message": "4", "operations": []}
+
+
+def test_chat_route_maps_missing_key_to_500(monkeypatch: pytest.MonkeyPatch) -> None:
+    def raise_config_error(_: str) -> str:
+        raise AIClientConfigError("OPENROUTER_API_KEY is not configured.")
+
+    monkeypatch.setattr("app.main.request_chat_completion", raise_config_error)
+
+    client = TestClient(app)
+    login(client)
+
+    response = client.post("/api/chat", json={"message": "2+2"})
+    assert response.status_code == 500
+    assert response.json() == {"detail": "OPENROUTER_API_KEY is not configured."}
+
+
+def test_chat_route_maps_upstream_failure_to_502(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_upstream_error(_: str) -> str:
+        raise AIClientUpstreamError("OpenRouter request failed with status 401.")
+
+    monkeypatch.setattr("app.main.request_chat_completion", raise_upstream_error)
+
+    client = TestClient(app)
+    login(client)
+
+    response = client.post("/api/chat", json={"message": "2+2"})
+    assert response.status_code == 502
+    assert response.json() == {"detail": "OpenRouter request failed with status 401."}

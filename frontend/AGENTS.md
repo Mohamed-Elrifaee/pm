@@ -22,13 +22,16 @@ This file defines the current frontend baseline in `pm/frontend/`. Use it as the
 - Login uses hardcoded credentials via backend API:
   - `POST /api/login`
   - `POST /api/logout`
+- Board data source is backend API:
+  - `GET /api/board` on authenticated load
+  - `PUT /api/board` after board interactions
 - Current UX is a single-board Kanban experience with five columns.
 - Supported in current UI:
   - Rename column titles inline
   - Add cards (title + optional details)
   - Delete cards
   - Move cards within and across columns with drag-and-drop
-- Current board state is saved in browser `localStorage` per username (`kanban-board:<username>`), so local changes survive logout/login for the same browser user.
+- Board state displayed in UI is backend-backed (SQLite via backend API) once user signs in.
 
 ## Current Data Model
 
@@ -67,6 +70,7 @@ Current tested behaviors include:
 
 - Login screen when unauthenticated
 - Successful sign-in and logout flow
+- Board persistence through backend-backed save/load
 - Rendering board/columns
 - Renaming a column
 - Adding/removing cards

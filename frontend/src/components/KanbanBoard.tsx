@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   pointerWithin,
   DndContext,
@@ -20,50 +20,29 @@ import { createId, initialData, moveCard, type BoardData } from "@/lib/kanban";
 type KanbanBoardProps = {
   onLogout?: () => void;
   username?: string | null;
+  board?: BoardData;
+  onBoardChange?: (nextBoard: BoardData) => void;
+  boardError?: string | null;
+  isSavingBoard?: boolean;
 };
 
-const makeStorageKey = (username: string) => `kanban-board:${username}`;
-
-const cloneInitialBoard = (): BoardData => ({
-  columns: initialData.columns.map((column) => ({
-    ...column,
-    cardIds: [...column.cardIds],
-  })),
-  cards: Object.fromEntries(
-    Object.entries(initialData.cards).map(([id, card]) => [id, { ...card }])
-  ),
+const cloneBoard = (source: BoardData): BoardData => ({
+  columns: source.columns.map((column) => ({ ...column, cardIds: [...column.cardIds] })),
+  cards: Object.fromEntries(Object.entries(source.cards).map(([id, card]) => [id, { ...card }])),
 });
 
-const isBoardData = (value: unknown): value is BoardData => {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const candidate = value as Partial<BoardData>;
-  return Array.isArray(candidate.columns) && typeof candidate.cards === "object";
-};
-
-const readBoardFromStorage = (username?: string | null): BoardData => {
-  if (!username || typeof window === "undefined") {
-    return cloneInitialBoard();
-  }
-
-  try {
-    const raw = window.localStorage.getItem(makeStorageKey(username));
-    if (!raw) {
-      return cloneInitialBoard();
-    }
-
-    const parsed = JSON.parse(raw) as unknown;
-    return isBoardData(parsed) ? parsed : cloneInitialBoard();
-  } catch {
-    return cloneInitialBoard();
-  }
-};
-
-export const KanbanBoard = ({ onLogout, username }: KanbanBoardProps) => {
-  const [board, setBoard] = useState<BoardData>(() => readBoardFromStorage(username));
+export const KanbanBoard = ({
+  onLogout,
+  username,
+  board,
+  onBoardChange,
+  boardError,
+  isSavingBoard,
+}: KanbanBoardProps) => {
+  const [localBoard, setLocalBoard] = useState<BoardData>(() => cloneBoard(initialData));
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
+  const currentBoard = board ?? localBoard;
+  const onChange = onBoardChange ?? setLocalBoard;
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -71,7 +50,7 @@ export const KanbanBoard = ({ onLogout, username }: KanbanBoardProps) => {
     })
   );
 
-  const cardsById = useMemo(() => board.cards, [board.cards]);
+  const cardsById = useMemo(() => currentBoard.cards, [currentBoard.cards]);
 
   const collisionDetection: CollisionDetection = (args) => {
     const pointerCollisions = pointerWithin(args);
@@ -93,73 +72,59 @@ export const KanbanBoard = ({ onLogout, username }: KanbanBoardProps) => {
       return;
     }
 
-    setBoard((prev) => ({
-      ...prev,
-      columns: moveCard(prev.columns, active.id as string, over.id as string),
-    }));
+    const nextBoard = {
+      ...currentBoard,
+      columns: moveCard(currentBoard.columns, active.id as string, over.id as string),
+    };
+    onChange(nextBoard);
   };
 
   const handleRenameColumn = (columnId: string, title: string) => {
-    setBoard((prev) => ({
-      ...prev,
-      columns: prev.columns.map((column) =>
+    const nextBoard = {
+      ...currentBoard,
+      columns: currentBoard.columns.map((column) =>
         column.id === columnId ? { ...column, title } : column
       ),
-    }));
+    };
+    onChange(nextBoard);
   };
 
   const handleAddCard = (columnId: string, title: string, details: string) => {
     const id = createId("card");
-    setBoard((prev) => ({
-      ...prev,
+    const nextBoard = {
+      ...currentBoard,
       cards: {
-        ...prev.cards,
+        ...currentBoard.cards,
         [id]: { id, title, details: details || "No details yet." },
       },
-      columns: prev.columns.map((column) =>
+      columns: currentBoard.columns.map((column) =>
         column.id === columnId
           ? { ...column, cardIds: [...column.cardIds, id] }
           : column
       ),
-    }));
+    };
+    onChange(nextBoard);
   };
 
   const handleDeleteCard = (columnId: string, cardId: string) => {
-    setBoard((prev) => {
-      return {
-        ...prev,
-        cards: Object.fromEntries(
-          Object.entries(prev.cards).filter(([id]) => id !== cardId)
-        ),
-        columns: prev.columns.map((column) =>
-          column.id === columnId
-            ? {
-                ...column,
-                cardIds: column.cardIds.filter((id) => id !== cardId),
-              }
-            : column
-        ),
-      };
-    });
+    const nextBoard = {
+      ...currentBoard,
+      cards: Object.fromEntries(
+        Object.entries(currentBoard.cards).filter(([id]) => id !== cardId)
+      ),
+      columns: currentBoard.columns.map((column) =>
+        column.id === columnId
+          ? {
+              ...column,
+              cardIds: column.cardIds.filter((id) => id !== cardId),
+            }
+          : column
+      ),
+    };
+    onChange(nextBoard);
   };
 
   const activeCard = activeCardId ? cardsById[activeCardId] : null;
-
-  useEffect(() => {
-    setBoard(readBoardFromStorage(username));
-  }, [username]);
-
-  useEffect(() => {
-    if (!username) {
-      return;
-    }
-
-    try {
-      window.localStorage.setItem(makeStorageKey(username), JSON.stringify(board));
-    } catch {
-      // Ignore storage failures so board interactions remain usable.
-    }
-  }, [board, username]);
 
   return (
     <div className="relative overflow-hidden">
@@ -193,6 +158,11 @@ export const KanbanBoard = ({ onLogout, username }: KanbanBoardProps) => {
                   Signed in as {username}
                 </p>
               ) : null}
+              {isSavingBoard ? (
+                <p className="mt-2 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--primary-blue)]">
+                  Saving...
+                </p>
+              ) : null}
               {onLogout ? (
                 <button
                   type="button"
@@ -204,8 +174,13 @@ export const KanbanBoard = ({ onLogout, username }: KanbanBoardProps) => {
               ) : null}
             </div>
           </div>
+          {boardError ? (
+            <p className="text-sm font-semibold text-red-600" role="alert">
+              {boardError}
+            </p>
+          ) : null}
           <div className="flex flex-wrap items-center gap-4">
-            {board.columns.map((column) => (
+            {currentBoard.columns.map((column) => (
               <div
                 key={column.id}
                 className="flex items-center gap-2 rounded-full border border-[var(--stroke)] px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--navy-dark)]"
@@ -224,11 +199,11 @@ export const KanbanBoard = ({ onLogout, username }: KanbanBoardProps) => {
           onDragEnd={handleDragEnd}
         >
           <section className="grid gap-6 lg:grid-cols-5">
-            {board.columns.map((column) => (
+            {currentBoard.columns.map((column) => (
               <KanbanColumn
                 key={column.id}
                 column={column}
-                cards={column.cardIds.map((cardId) => board.cards[cardId])}
+                cards={column.cardIds.map((cardId) => currentBoard.cards[cardId])}
                 onRename={handleRenameColumn}
                 onAddCard={handleAddCard}
                 onDeleteCard={handleDeleteCard}

@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AppShell } from "@/components/AppShell";
+import { initialData } from "@/lib/kanban";
 
 type MockResponse = {
   ok: boolean;
@@ -12,6 +13,11 @@ const createJsonResponse = (status: number, payload: unknown): MockResponse => (
   ok: status >= 200 && status < 300,
   status,
   json: async () => payload,
+});
+
+const createBoardPayload = () => ({
+  board: JSON.parse(JSON.stringify(initialData)),
+  version: 1,
 });
 
 describe("AppShell", () => {
@@ -45,6 +51,10 @@ describe("AppShell", () => {
         return createJsonResponse(200, { authenticated: true, username: "user" });
       }
 
+      if (url.includes("/api/board")) {
+        return createJsonResponse(200, createBoardPayload());
+      }
+
       throw new Error(`Unhandled fetch URL in test: ${url}`);
     });
 
@@ -71,6 +81,10 @@ describe("AppShell", () => {
 
       if (url.includes("/api/session")) {
         return createJsonResponse(200, { authenticated: true, username: "user" });
+      }
+
+      if (url.includes("/api/board")) {
+        return createJsonResponse(200, createBoardPayload());
       }
 
       if (url.includes("/api/logout")) {

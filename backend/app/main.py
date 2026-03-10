@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 from fastapi.staticfiles import StaticFiles
+from app.ai_client import AIClientConfigError, AIClientUpstreamError, request_chat_completion
 from app.board_store import BoardStoreError, get_or_create_board_for_user, save_board_for_user
 
 app = FastAPI(title="Project Management MVP API")
@@ -38,6 +39,10 @@ class ColumnPayload(BaseModel):
 class BoardPayload(BaseModel):
     columns: list[ColumnPayload]
     cards: dict[str, CardPayload]
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(min_length=1)
 
 
 app.add_middleware(
@@ -165,6 +170,27 @@ def write_board(payload: BoardPayload, request: Request) -> dict[str, Any]:
         ) from None
 
     return {"board": board, "version": version}
+
+
+@app.post("/api/chat")
+def chat(payload: ChatRequest, request: Request) -> dict[str, Any]:
+    _get_authenticated_username(request)
+
+    try:
+        assistant_message = request_chat_completion(payload.message)
+    except AIClientConfigError as error:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(error),
+        ) from None
+    except AIClientUpstreamError as error:
+        logger.exception("OpenRouter request failed.")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(error),
+        ) from None
+
+    return {"message": assistant_message, "operations": []}
 
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

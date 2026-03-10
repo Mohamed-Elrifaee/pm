@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { KanbanBoard } from "@/components/KanbanBoard";
+import type { BoardData } from "@/lib/kanban";
 
 type SessionResponse = {
   authenticated: boolean;
@@ -11,6 +12,11 @@ type SessionResponse = {
 type LoginState = {
   username: string;
   password: string;
+};
+
+type BoardResponse = {
+  board: BoardData;
+  version: number;
 };
 
 const defaultLoginState: LoginState = {
@@ -31,12 +37,46 @@ const readSession = async (): Promise<SessionResponse> => {
   return response.json();
 };
 
+const readBoard = async (): Promise<BoardResponse> => {
+  const response = await fetch("/api/board", {
+    credentials: "include",
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error("Failed to read board.");
+  }
+
+  return response.json();
+};
+
+const writeBoard = async (board: BoardData): Promise<BoardResponse> => {
+  const response = await fetch("/api/board", {
+    method: "PUT",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(board),
+  });
+
+  if (!response.ok) {
+    throw new Error("Failed to save board.");
+  }
+
+  return response.json();
+};
+
 export const AppShell = () => {
   const [session, setSession] = useState<SessionResponse | null>(null);
   const [isCheckingSession, setIsCheckingSession] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loginState, setLoginState] = useState<LoginState>(defaultLoginState);
+  const [board, setBoard] = useState<BoardData | null>(null);
+  const [isBoardLoading, setIsBoardLoading] = useState(false);
+  const [isBoardSaving, setIsBoardSaving] = useState(false);
+  const [boardError, setBoardError] = useState<string | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -65,6 +105,30 @@ export const AppShell = () => {
       isMounted = false;
     };
   }, []);
+
+  const loadBoard = async () => {
+    setBoardError(null);
+    setIsBoardLoading(true);
+
+    try {
+      const boardResponse = await readBoard();
+      setBoard(boardResponse.board);
+    } catch {
+      setBoardError("Unable to load board right now. Please retry.");
+    } finally {
+      setIsBoardLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!session?.authenticated) {
+      setBoard(null);
+      setBoardError(null);
+      return;
+    }
+
+    void loadBoard();
+  }, [session?.authenticated]);
 
   const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -107,7 +171,30 @@ export const AppShell = () => {
       });
     } finally {
       setSession({ authenticated: false, username: null });
+      setBoard(null);
+      setBoardError(null);
       setIsSubmitting(false);
+    }
+  };
+
+  const handleBoardChange = async (nextBoard: BoardData) => {
+    if (!board) {
+      return;
+    }
+
+    const previousBoard = board;
+    setBoard(nextBoard);
+    setBoardError(null);
+    setIsBoardSaving(true);
+
+    try {
+      const saved = await writeBoard(nextBoard);
+      setBoard(saved.board);
+    } catch {
+      setBoard(previousBoard);
+      setBoardError("We could not save this change. Please try again.");
+    } finally {
+      setIsBoardSaving(false);
     }
   };
 
@@ -122,7 +209,40 @@ export const AppShell = () => {
   }
 
   if (session?.authenticated) {
-    return <KanbanBoard onLogout={handleLogout} username={session.username} />;
+    if (isBoardLoading || !board) {
+      return (
+        <main className="mx-auto flex min-h-screen max-w-[560px] items-center justify-center px-6">
+          <div className="text-center">
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]">
+              Loading board...
+            </p>
+            {boardError ? (
+              <div className="mt-4 space-y-3">
+                <p className="text-sm font-semibold text-red-600">{boardError}</p>
+                <button
+                  type="button"
+                  onClick={() => void loadBoard()}
+                  className="rounded-full border border-[var(--stroke)] px-4 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--navy-dark)] transition hover:border-[var(--primary-blue)] hover:text-[var(--primary-blue)]"
+                >
+                  Retry
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </main>
+      );
+    }
+
+    return (
+      <KanbanBoard
+        onLogout={handleLogout}
+        username={session.username}
+        board={board}
+        onBoardChange={(next) => void handleBoardChange(next)}
+        boardError={boardError}
+        isSavingBoard={isBoardSaving}
+      />
+    );
   }
 
   return (
