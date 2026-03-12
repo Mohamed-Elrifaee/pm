@@ -43,4 +43,24 @@ describe("KanbanBoard", () => {
 
     expect(within(column).queryByText("New card")).not.toBeInTheDocument();
   });
+
+  it("adds a new column", async () => {
+    render(<KanbanBoard />);
+
+    await userEvent.click(screen.getByRole("button", { name: /add column/i }));
+
+    expect(screen.getAllByTestId(/column-/i)).toHaveLength(6);
+    expect(screen.getByDisplayValue("New lane")).toBeInTheDocument();
+  });
+
+  it("removes a column and keeps its cards", async () => {
+    render(<KanbanBoard />);
+
+    await userEvent.click(screen.getByRole("button", { name: /remove discovery/i }));
+
+    expect(screen.queryByTestId("column-col-discovery")).not.toBeInTheDocument();
+    expect(screen.getByTestId("column-col-backlog")).toHaveTextContent(
+      "Prototype analytics view"
+    );
+  });
 });

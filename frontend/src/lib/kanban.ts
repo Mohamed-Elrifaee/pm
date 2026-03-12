@@ -161,6 +161,49 @@ export const moveCard = (
   });
 };
 
+export const addColumn = (
+  columns: Column[],
+  title = "New lane"
+): Column[] => [
+  ...columns,
+  {
+    id: createId("col"),
+    title,
+    cardIds: [],
+  },
+];
+
+export const removeColumn = (columns: Column[], columnId: string): Column[] => {
+  if (columns.length <= 1) {
+    return columns;
+  }
+
+  const columnIndex = columns.findIndex((column) => column.id === columnId);
+  if (columnIndex === -1) {
+    return columns;
+  }
+
+  const removedColumn = columns[columnIndex];
+  const recipientColumnId =
+    columnIndex === 0 ? columns[1]?.id ?? null : columns[columnIndex - 1]?.id ?? null;
+
+  return columns
+    .filter((column) => column.id !== columnId)
+    .map((column) => {
+      if (column.id !== recipientColumnId) {
+        return column;
+      }
+
+      return {
+        ...column,
+        cardIds:
+          columnIndex === 0
+            ? [...removedColumn.cardIds, ...column.cardIds]
+            : [...column.cardIds, ...removedColumn.cardIds],
+      };
+    });
+};
+
 export const createId = (prefix: string) => {
   const randomPart = Math.random().toString(36).slice(2, 8);
   const timePart = Date.now().toString(36);

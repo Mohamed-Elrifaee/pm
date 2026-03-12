@@ -147,7 +147,11 @@ const installAuthMocks = async (page: Page, options: MockOptions = {}) => {
     }
 
     if (route.request().method() === "PUT") {
-      board = route.request().postDataJSON() as BoardData;
+      const payload = route.request().postDataJSON() as {
+        board: BoardData;
+        version: number;
+      };
+      board = payload.board;
       version += 1;
 
       await route.fulfill({
@@ -278,7 +282,20 @@ test("adds a card to a column", async ({ page }) => {
   await firstColumn.getByPlaceholder("Card title").fill("Playwright card");
   await firstColumn.getByPlaceholder("Details").fill("Added via e2e.");
   await firstColumn.getByRole("button", { name: /add card/i }).click();
-  await expect(firstColumn.getByText("Playwright card")).toBeVisible();
+  await expect(firstColumn).toContainText("Playwright card");
+});
+
+test("adds and removes a column", async ({ page }) => {
+  await installAuthMocks(page);
+  await page.goto("/");
+  await login(page);
+
+  await page.getByRole("button", { name: /add column/i }).click();
+  await expect(page.getByLabel("Column title").last()).toHaveValue("New lane");
+
+  await page.getByRole("button", { name: /remove discovery/i }).click();
+  await expect(page.getByTestId("column-col-discovery")).toHaveCount(0);
+  await expect(page.getByTestId("column-col-backlog")).toContainText("Prototype analytics view");
 });
 
 test("moves a card between columns", async ({ page }) => {
@@ -289,9 +306,12 @@ test("moves a card between columns", async ({ page }) => {
   const card = page.getByTestId("card-card-1");
   const targetColumn = page.getByTestId("column-col-review");
   const cardBox = await card.boundingBox();
-  const columnBox = await targetColumn.boundingBox();
-  if (!cardBox || !columnBox) {
+  const targetBox = await targetColumn.boundingBox();
+  if (!cardBox) {
     throw new Error("Unable to resolve drag coordinates.");
+  }
+  if (!targetBox) {
+    throw new Error("Unable to resolve drop coordinates.");
   }
 
   await page.mouse.move(
@@ -300,12 +320,17 @@ test("moves a card between columns", async ({ page }) => {
   );
   await page.mouse.down();
   await page.mouse.move(
-    columnBox.x + columnBox.width / 2,
-    columnBox.y + 120,
-    { steps: 12 }
+    cardBox.x + cardBox.width / 2 + 18,
+    cardBox.y + cardBox.height / 2 + 18,
+    { steps: 8 }
+  );
+  await page.mouse.move(
+    targetBox.x + targetBox.width / 2,
+    targetBox.y + Math.min(targetBox.height / 2, 260),
+    { steps: 18 }
   );
   await page.mouse.up();
-  await expect(targetColumn.getByTestId("card-card-1")).toBeVisible();
+  await expect(targetColumn).toContainText("Align roadmap themes");
 });
 
 test("moves a card into an empty column", async ({ page }) => {
@@ -315,13 +340,16 @@ test("moves a card into an empty column", async ({ page }) => {
 
   await page.locator('button[aria-label="Delete QA micro-interactions"]').click();
   const reviewColumn = page.getByTestId("column-col-review");
-  await expect(reviewColumn.getByText("Drop a card here")).toBeVisible();
+  await expect(reviewColumn).toContainText("Drop a card here");
 
   const card = page.getByTestId("card-card-1");
   const cardBox = await card.boundingBox();
   const reviewBox = await reviewColumn.boundingBox();
-  if (!cardBox || !reviewBox) {
+  if (!cardBox) {
     throw new Error("Unable to resolve drag coordinates.");
+  }
+  if (!reviewBox) {
+    throw new Error("Unable to resolve drop coordinates.");
   }
 
   await page.mouse.move(
@@ -330,13 +358,18 @@ test("moves a card into an empty column", async ({ page }) => {
   );
   await page.mouse.down();
   await page.mouse.move(
+    cardBox.x + cardBox.width / 2 + 18,
+    cardBox.y + cardBox.height / 2 + 18,
+    { steps: 8 }
+  );
+  await page.mouse.move(
     reviewBox.x + reviewBox.width / 2,
-    reviewBox.y + reviewBox.height / 2,
-    { steps: 12 }
+    reviewBox.y + Math.min(reviewBox.height / 2, 260),
+    { steps: 18 }
   );
   await page.mouse.up();
 
-  await expect(reviewColumn.getByTestId("card-card-1")).toBeVisible();
+  await expect(reviewColumn).toContainText("Align roadmap themes");
 });
 
 test("logs out and returns to sign in", async ({ page }) => {
@@ -358,13 +391,13 @@ test("keeps board changes after logout and login for the same user", async ({ pa
   await firstColumn.getByPlaceholder("Card title").fill("Persistent card");
   await firstColumn.getByPlaceholder("Details").fill("Should remain after re-login.");
   await firstColumn.getByRole("button", { name: /add card/i }).click();
-  await expect(firstColumn.getByText("Persistent card")).toBeVisible();
+  await expect(firstColumn).toContainText("Persistent card");
 
   await page.getByRole("button", { name: /log out/i }).click();
   await expect(page.getByRole("heading", { name: /sign in/i })).toBeVisible();
 
   await login(page);
-  await expect(page.getByText("Persistent card")).toBeVisible();
+  await expect(page.getByTestId("column-col-backlog")).toContainText("Persistent card");
 });
 
 test("keeps board changes after page reload", async ({ page }) => {
@@ -377,10 +410,10 @@ test("keeps board changes after page reload", async ({ page }) => {
   await firstColumn.getByPlaceholder("Card title").fill("Reload card");
   await firstColumn.getByPlaceholder("Details").fill("Should remain after reload.");
   await firstColumn.getByRole("button", { name: /add card/i }).click();
-  await expect(firstColumn.getByText("Reload card")).toBeVisible();
+  await expect(firstColumn).toContainText("Reload card");
 
   await page.reload();
-  await expect(page.getByText("Reload card")).toBeVisible();
+  await expect(page.getByTestId("column-col-backlog")).toContainText("Reload card");
 });
 
 test("applies AI chat operations and updates the board automatically", async ({ page }) => {
@@ -388,11 +421,12 @@ test("applies AI chat operations and updates the board automatically", async ({ 
   await page.goto("/");
   await login(page);
 
+  await page.getByRole("button", { name: /open board assistant/i }).click();
   await page.getByLabel("AI message").fill("Create a weekly report card in backlog");
   await page.getByRole("button", { name: /^send$/i }).click();
 
   await expect(page.getByText("Created task in Backlog")).toBeVisible();
-  await expect(page.getByText("AI weekly report")).toBeVisible();
+  await expect(page.getByTestId("column-col-backlog")).toContainText("AI weekly report");
 });
 
 test("shows chat error and keeps board usable when AI call fails", async ({ page }) => {
@@ -400,6 +434,7 @@ test("shows chat error and keeps board usable when AI call fails", async ({ page
   await page.goto("/");
   await login(page);
 
+  await page.getByRole("button", { name: /open board assistant/i }).click();
   await page.getByLabel("AI message").fill("Create a weekly report card in backlog");
   await page.getByRole("button", { name: /^send$/i }).click();
 

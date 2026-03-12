@@ -388,10 +388,18 @@ export const AppShell = () => {
 
   if (isCheckingSession) {
     return (
-      <main className="mx-auto flex min-h-screen max-w-[560px] items-center justify-center px-6">
-        <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]">
-          Checking session...
-        </p>
+      <main className="mx-auto flex min-h-screen max-w-[640px] items-center justify-center px-6">
+        <section className="panel-shell rise-in w-full rounded-[34px] px-8 py-12 text-center">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.35em] text-[var(--gray-text)]">
+            Project Management MVP
+          </p>
+          <h1 className="mt-4 font-display text-4xl font-semibold text-[var(--navy-dark)]">
+            Preparing your workspace
+          </h1>
+          <p className="mt-4 text-sm leading-7 text-[var(--gray-text)]">
+            Checking session...
+          </p>
+        </section>
       </main>
     );
   }
@@ -399,18 +407,23 @@ export const AppShell = () => {
   if (session?.authenticated) {
     if (isBoardLoading || !board) {
       return (
-        <main className="mx-auto flex min-h-screen max-w-[560px] items-center justify-center px-6">
-          <div className="text-center">
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]">
-              Loading board...
+        <main className="mx-auto flex min-h-screen max-w-[640px] items-center justify-center px-6">
+          <div className="panel-shell rise-in w-full rounded-[34px] px-8 py-12 text-center">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.35em] text-[var(--gray-text)]">
+              Board Sync
             </p>
+            <h1 className="mt-4 font-display text-4xl font-semibold text-[var(--navy-dark)]">
+              Loading board...
+            </h1>
             {boardError ? (
               <div className="mt-4 space-y-3">
-                <p className="text-sm font-semibold text-red-600">{boardError}</p>
+                <p className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600">
+                  {boardError}
+                </p>
                 <button
                   type="button"
                   onClick={() => void loadBoard()}
-                  className="rounded-full border border-[var(--stroke)] px-4 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--navy-dark)] transition hover:border-[var(--primary-blue)] hover:text-[var(--primary-blue)]"
+                  className="rounded-full border border-[rgba(3,33,71,0.12)] bg-white px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.24em] text-[var(--navy-dark)] transition hover:-translate-y-0.5 hover:border-[var(--primary-blue)] hover:text-[var(--primary-blue)]"
                 >
                   Retry
                 </button>
@@ -444,67 +457,126 @@ export const AppShell = () => {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-[560px] items-center px-6">
-      <section className="w-full rounded-[32px] border border-[var(--stroke)] bg-white/90 p-8 shadow-[var(--shadow)] backdrop-blur">
-        <p className="text-xs font-semibold uppercase tracking-[0.35em] text-[var(--gray-text)]">
-          Project Management MVP
-        </p>
-        <h1 className="mt-3 font-display text-3xl font-semibold text-[var(--navy-dark)]">
-          Sign in
-        </h1>
-        <p className="mt-2 text-sm leading-6 text-[var(--gray-text)]">
-          Use the demo credentials to access your board.
-        </p>
-        <p className="mt-2 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--primary-blue)]">
-          Username: user | Password: password
-        </p>
+    <main className="mx-auto flex min-h-screen max-w-[1280px] items-center px-4 py-10 sm:px-6">
+      <section className="grid w-full gap-6 lg:grid-cols-[minmax(0,1.1fr)_480px]">
+        <div className="panel-shell rise-in soft-grid relative overflow-hidden rounded-[38px] p-8 sm:p-10">
+          <div className="relative z-10">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="rounded-full border border-[rgba(3,33,71,0.08)] bg-[rgba(255,255,255,0.82)] px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.32em] text-[var(--gray-text)]">
+                Project Management MVP
+              </span>
+              <span className="rounded-full bg-[rgba(236,173,10,0.15)] px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--navy-dark)]">
+                Local Workspace
+              </span>
+            </div>
 
-        <form onSubmit={handleLogin} className="mt-6 space-y-4">
-          <label className="block">
-            <span className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]">
-              Username
-            </span>
-            <input
-              value={loginState.username}
-              onChange={(event) =>
-                setLoginState((prev) => ({ ...prev, username: event.target.value }))
-              }
-              className="mt-2 w-full rounded-xl border border-[var(--stroke)] bg-white px-3 py-2 text-sm font-medium text-[var(--navy-dark)] outline-none transition focus:border-[var(--primary-blue)]"
-              required
-              autoComplete="username"
-            />
-          </label>
-
-          <label className="block">
-            <span className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]">
-              Password
-            </span>
-            <input
-              type="password"
-              value={loginState.password}
-              onChange={(event) =>
-                setLoginState((prev) => ({ ...prev, password: event.target.value }))
-              }
-              className="mt-2 w-full rounded-xl border border-[var(--stroke)] bg-white px-3 py-2 text-sm font-medium text-[var(--navy-dark)] outline-none transition focus:border-[var(--primary-blue)]"
-              required
-              autoComplete="current-password"
-            />
-          </label>
-
-          {error ? (
-            <p className="text-sm font-semibold text-red-600" role="alert">
-              {error}
+            <h1 className="mt-6 max-w-2xl font-display text-4xl font-semibold leading-tight text-[var(--navy-dark)] sm:text-5xl">
+              Your board, with more presence
+            </h1>
+            <p className="mt-4 max-w-xl text-sm leading-7 text-[var(--gray-text)] sm:text-[15px]">
+              Step into the board through a cleaner launch surface. The Kanban area keeps the MVP
+              simplicity, but now the workflow can expand with new lanes and the AI agent stays
+              tucked to the side until you need it.
             </p>
-          ) : null}
 
-          <button
-            type="submit"
-            className="w-full rounded-full bg-[var(--secondary-purple)] px-4 py-3 text-xs font-semibold uppercase tracking-[0.2em] text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={isSubmitting}
-          >
-            {isSubmitting ? "Signing in..." : "Sign in"}
-          </button>
-        </form>
+            <div className="mt-8 grid gap-3 sm:grid-cols-3">
+              <article className="rounded-[26px] border border-[rgba(3,33,71,0.08)] bg-[rgba(255,255,255,0.76)] px-4 py-4 shadow-[0_18px_34px_rgba(3,33,71,0.08)]">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--gray-text)]">
+                  Board Shape
+                </p>
+                <p className="mt-3 font-display text-2xl font-semibold text-[var(--navy-dark)]">
+                  Flexible lanes
+                </p>
+              </article>
+              <article className="rounded-[26px] border border-[rgba(3,33,71,0.08)] bg-[rgba(255,255,255,0.76)] px-4 py-4 shadow-[0_18px_34px_rgba(3,33,71,0.08)]">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--gray-text)]">
+                  AI Actions
+                </p>
+                <p className="mt-3 font-display text-2xl font-semibold text-[var(--navy-dark)]">
+                  Create. Move. Edit.
+                </p>
+              </article>
+              <article className="rounded-[26px] border border-[rgba(3,33,71,0.08)] bg-[rgba(255,255,255,0.76)] px-4 py-4 shadow-[0_18px_34px_rgba(3,33,71,0.08)]">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--gray-text)]">
+                  Access
+                </p>
+                <p className="mt-3 font-display text-2xl font-semibold text-[var(--navy-dark)]">
+                  Demo login
+                </p>
+              </article>
+            </div>
+          </div>
+        </div>
+
+        <section className="panel-shell rise-in rounded-[38px] p-8 [animation-delay:120ms]">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.35em] text-[var(--gray-text)]">
+            Workspace Access
+          </p>
+          <h2 className="mt-4 font-display text-3xl font-semibold text-[var(--navy-dark)]">
+            Sign in
+          </h2>
+          <p className="mt-3 text-sm leading-7 text-[var(--gray-text)]">
+            Use the demo credentials to enter the board.
+          </p>
+          <div className="mt-4 rounded-[24px] border border-[rgba(32,157,215,0.14)] bg-[rgba(32,157,215,0.08)] px-4 py-4">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--primary-blue)]">
+              Demo Credentials
+            </p>
+            <p className="mt-2 text-sm font-semibold text-[var(--navy-dark)]">
+              Username: user
+            </p>
+            <p className="mt-1 text-sm font-semibold text-[var(--navy-dark)]">
+              Password: password
+            </p>
+          </div>
+
+          <form onSubmit={handleLogin} className="mt-6 space-y-4">
+            <label className="block">
+              <span className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--gray-text)]">
+                Username
+              </span>
+              <input
+                value={loginState.username}
+                onChange={(event) =>
+                  setLoginState((prev) => ({ ...prev, username: event.target.value }))
+                }
+                className="mt-3 w-full rounded-[22px] border border-[rgba(3,33,71,0.08)] bg-white px-4 py-3 text-sm font-medium text-[var(--navy-dark)] outline-none transition focus:border-[rgba(32,157,215,0.34)]"
+                required
+                autoComplete="username"
+              />
+            </label>
+
+            <label className="block">
+              <span className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--gray-text)]">
+                Password
+              </span>
+              <input
+                type="password"
+                value={loginState.password}
+                onChange={(event) =>
+                  setLoginState((prev) => ({ ...prev, password: event.target.value }))
+                }
+                className="mt-3 w-full rounded-[22px] border border-[rgba(3,33,71,0.08)] bg-white px-4 py-3 text-sm font-medium text-[var(--navy-dark)] outline-none transition focus:border-[rgba(32,157,215,0.34)]"
+                required
+                autoComplete="current-password"
+              />
+            </label>
+
+            {error ? (
+              <p className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600" role="alert">
+                {error}
+              </p>
+            ) : null}
+
+            <button
+              type="submit"
+              className="w-full rounded-full bg-[linear-gradient(135deg,_var(--secondary-purple),_#9157a9)] px-4 py-3 text-xs font-semibold uppercase tracking-[0.24em] text-white transition hover:-translate-y-0.5 hover:shadow-[0_18px_30px_rgba(117,57,145,0.25)] disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={isSubmitting}
+            >
+              {isSubmitting ? "Signing in..." : "Sign in"}
+            </button>
+          </form>
+        </section>
       </section>
     </main>
   );

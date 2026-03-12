@@ -164,6 +164,7 @@ describe("AppShell", () => {
       expect(screen.getByRole("heading", { name: "Kanban Studio" })).toBeInTheDocument()
     );
 
+    await userEvent.click(screen.getByRole("button", { name: /open board assistant/i }));
     await userEvent.type(screen.getByLabelText(/ai message/i), "Create weekly report task");
     await userEvent.click(screen.getByRole("button", { name: /^send$/i }));
 
@@ -200,6 +201,7 @@ describe("AppShell", () => {
       expect(screen.getByRole("heading", { name: "Kanban Studio" })).toBeInTheDocument()
     );
 
+    await userEvent.click(screen.getByRole("button", { name: /open board assistant/i }));
     await userEvent.type(screen.getByLabelText(/ai message/i), "Move card-1 to review");
     await userEvent.click(screen.getByRole("button", { name: /^send$/i }));
 
@@ -208,5 +210,35 @@ describe("AppShell", () => {
         screen.getByText("Unable to get AI response right now. Please try again.")
       ).toBeInTheDocument()
     );
+  });
+
+  it("keeps the board assistant hidden until launched", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = input.toString();
+
+      if (url.includes("/api/session")) {
+        return createJsonResponse(200, { authenticated: true, username: "user" });
+      }
+
+      if (url.includes("/api/board")) {
+        return createJsonResponse(200, createBoardPayload());
+      }
+
+      throw new Error(`Unhandled fetch URL in test: ${url}`);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AppShell />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "Kanban Studio" })).toBeInTheDocument()
+    );
+
+    expect(screen.queryByLabelText(/ai message/i)).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /open board assistant/i }));
+
+    expect(screen.getByLabelText(/ai message/i)).toBeInTheDocument();
   });
 });
