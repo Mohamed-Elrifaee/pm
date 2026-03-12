@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+
 import {
   ChatSidebar,
   type ChatMessage,
@@ -41,6 +42,20 @@ const defaultLoginState: LoginState = {
   password: "",
 };
 
+const cloneBoard = (source: BoardData): BoardData => ({
+  columns: source.columns.map((column) => ({ ...column, cardIds: [...column.cardIds] })),
+  cards: Object.fromEntries(Object.entries(source.cards).map(([id, card]) => [id, { ...card }])),
+});
+
+class SaveBoardError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 const readSession = async (): Promise<SessionResponse> => {
   const response = await fetch("/api/session", {
     credentials: "include",
@@ -67,18 +82,18 @@ const readBoard = async (): Promise<BoardResponse> => {
   return response.json();
 };
 
-const writeBoard = async (board: BoardData): Promise<BoardResponse> => {
+const writeBoard = async (board: BoardData, version: number): Promise<BoardResponse> => {
   const response = await fetch("/api/board", {
     method: "PUT",
     credentials: "include",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(board),
+    body: JSON.stringify({ board, version }),
   });
 
   if (!response.ok) {
-    throw new Error("Failed to save board.");
+    throw new SaveBoardError(response.status, "Failed to save board.");
   }
 
   return response.json();
@@ -118,9 +133,103 @@ export const AppShell = () => {
   const [isBoardSaving, setIsBoardSaving] = useState(false);
   const [boardError, setBoardError] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [pendingChatMessage, setPendingChatMessage] = useState<ChatMessage | null>(null);
   const [chatDraft, setChatDraft] = useState("");
   const [chatError, setChatError] = useState<string | null>(null);
   const [isChatSubmitting, setIsChatSubmitting] = useState(false);
+
+  const boardVersionRef = useRef<number | null>(null);
+  const confirmedBoardRef = useRef<BoardData | null>(null);
+  const queuedBoardRef = useRef<BoardData | null>(null);
+  const isBoardSaveLoopRunningRef = useRef(false);
+
+  const applyConfirmedBoard = (nextBoard: BoardData, nextVersion: number) => {
+    const confirmedBoard = cloneBoard(nextBoard);
+    confirmedBoardRef.current = confirmedBoard;
+    boardVersionRef.current = nextVersion;
+    setBoard(confirmedBoard);
+  };
+
+  const resetBoardState = () => {
+    boardVersionRef.current = null;
+    confirmedBoardRef.current = null;
+    queuedBoardRef.current = null;
+    isBoardSaveLoopRunningRef.current = false;
+    setBoard(null);
+    setBoardError(null);
+    setIsBoardSaving(false);
+  };
+
+  const loadBoard = async () => {
+    setBoardError(null);
+    setIsBoardLoading(true);
+
+    try {
+      const boardResponse = await readBoard();
+      applyConfirmedBoard(boardResponse.board, boardResponse.version);
+    } catch {
+      setBoardError("Unable to load board right now. Please retry.");
+    } finally {
+      setIsBoardLoading(false);
+    }
+  };
+
+  const flushBoardSaveQueue = async () => {
+    if (isBoardSaveLoopRunningRef.current || boardVersionRef.current === null || !queuedBoardRef.current) {
+      return;
+    }
+
+    isBoardSaveLoopRunningRef.current = true;
+    setIsBoardSaving(true);
+
+    try {
+      while (queuedBoardRef.current && boardVersionRef.current !== null) {
+        const boardToSave = cloneBoard(queuedBoardRef.current);
+        const versionToSave = boardVersionRef.current;
+        queuedBoardRef.current = null;
+
+        try {
+          const saved = await writeBoard(boardToSave, versionToSave);
+          const hasNewerBoardQueued = queuedBoardRef.current !== null;
+          confirmedBoardRef.current = cloneBoard(saved.board);
+          boardVersionRef.current = saved.version;
+          if (!hasNewerBoardQueued) {
+            setBoard(cloneBoard(saved.board));
+          }
+          setBoardError(null);
+        } catch (error) {
+          if (queuedBoardRef.current) {
+            continue;
+          }
+
+          if (error instanceof SaveBoardError && error.status === 409) {
+            try {
+              const latestBoard = await readBoard();
+              applyConfirmedBoard(latestBoard.board, latestBoard.version);
+              setBoardError("Board changed before this save completed. Latest board loaded.");
+            } catch {
+              setBoardError(
+                "Board changed before this save completed, and the latest board could not be loaded."
+              );
+            }
+          } else {
+            const confirmedBoard = confirmedBoardRef.current;
+            if (confirmedBoard) {
+              setBoard(cloneBoard(confirmedBoard));
+            }
+            setBoardError("We could not save this change. Please try again.");
+          }
+          break;
+        }
+      }
+    } finally {
+      isBoardSaveLoopRunningRef.current = false;
+      setIsBoardSaving(false);
+      if (queuedBoardRef.current) {
+        void flushBoardSaveQueue();
+      }
+    }
+  };
 
   useEffect(() => {
     let isMounted = true;
@@ -150,25 +259,11 @@ export const AppShell = () => {
     };
   }, []);
 
-  const loadBoard = async () => {
-    setBoardError(null);
-    setIsBoardLoading(true);
-
-    try {
-      const boardResponse = await readBoard();
-      setBoard(boardResponse.board);
-    } catch {
-      setBoardError("Unable to load board right now. Please retry.");
-    } finally {
-      setIsBoardLoading(false);
-    }
-  };
-
   useEffect(() => {
     if (!session?.authenticated) {
-      setBoard(null);
-      setBoardError(null);
+      resetBoardState();
       setChatMessages([]);
+      setPendingChatMessage(null);
       setChatDraft("");
       setChatError(null);
       setIsChatSubmitting(false);
@@ -219,9 +314,9 @@ export const AppShell = () => {
       });
     } finally {
       setSession({ authenticated: false, username: null });
-      setBoard(null);
-      setBoardError(null);
+      resetBoardState();
       setChatMessages([]);
+      setPendingChatMessage(null);
       setChatDraft("");
       setChatError(null);
       setIsChatSubmitting(false);
@@ -230,24 +325,11 @@ export const AppShell = () => {
   };
 
   const handleBoardChange = async (nextBoard: BoardData) => {
-    if (!board) {
-      return;
-    }
-
-    const previousBoard = board;
-    setBoard(nextBoard);
+    const optimisticBoard = cloneBoard(nextBoard);
+    setBoard(optimisticBoard);
     setBoardError(null);
-    setIsBoardSaving(true);
-
-    try {
-      const saved = await writeBoard(nextBoard);
-      setBoard(saved.board);
-    } catch {
-      setBoard(previousBoard);
-      setBoardError("We could not save this change. Please try again.");
-    } finally {
-      setIsBoardSaving(false);
-    }
+    queuedBoardRef.current = optimisticBoard;
+    await flushBoardSaveQueue();
   };
 
   const handleChatSubmit = async () => {
@@ -271,17 +353,18 @@ export const AppShell = () => {
       content: trimmedMessage,
     };
 
-    setChatMessages((prev) => [...prev, userMessage]);
+    setPendingChatMessage(userMessage);
     setChatDraft("");
     setChatError(null);
     setIsChatSubmitting(true);
 
     try {
       const response = await sendChatMessage(trimmedMessage, history);
-      setBoard(response.board);
+      applyConfirmedBoard(response.board, response.version);
       setBoardError(null);
       setChatMessages((prev) => [
         ...prev,
+        userMessage,
         {
           id: createMessageId(),
           role: "assistant",
@@ -289,13 +372,19 @@ export const AppShell = () => {
           operations: response.operations,
         },
       ]);
+      setPendingChatMessage(null);
     } catch {
+      setPendingChatMessage(null);
       setChatDraft(trimmedMessage);
       setChatError("Unable to get AI response right now. Please try again.");
     } finally {
       setIsChatSubmitting(false);
     }
   };
+
+  const renderedChatMessages = pendingChatMessage
+    ? [...chatMessages, pendingChatMessage]
+    : chatMessages;
 
   if (isCheckingSession) {
     return (
@@ -342,7 +431,7 @@ export const AppShell = () => {
         isSavingBoard={isBoardSaving}
         chatSidebar={
           <ChatSidebar
-            messages={chatMessages}
+            messages={renderedChatMessages}
             draft={chatDraft}
             isSubmitting={isChatSubmitting}
             error={chatError}

@@ -88,6 +88,10 @@ class BoardStoreError(Exception):
     pass
 
 
+class BoardVersionConflictError(BoardStoreError):
+    pass
+
+
 def get_database_path() -> Path:
     configured = os.environ.get("DATABASE_PATH")
     if configured:
@@ -170,7 +174,7 @@ def get_or_create_board_for_user(username: str) -> tuple[dict[str, Any], int]:
         connection.close()
 
 
-def save_board_for_user(username: str, board: dict[str, Any]) -> int:
+def save_board_for_user(username: str, board: dict[str, Any], expected_version: int) -> int:
     try:
         connection = _open_connection()
     except sqlite3.Error as error:
@@ -186,6 +190,10 @@ def save_board_for_user(username: str, board: dict[str, Any]) -> int:
         serialized_board = _serialize_board(board)
 
         if row is None:
+            if expected_version != 0:
+                raise BoardVersionConflictError(
+                    f"Board version conflict. Expected version {expected_version}, current version 0."
+                )
             connection.execute(
                 "INSERT INTO boards (user_id, board_json, version) VALUES (?, ?, 1)",
                 (user_id, serialized_board),
@@ -193,17 +201,30 @@ def save_board_for_user(username: str, board: dict[str, Any]) -> int:
             connection.commit()
             return 1
 
-        next_version = int(row["version"]) + 1
-        connection.execute(
+        current_version = int(row["version"])
+        if current_version != expected_version:
+            raise BoardVersionConflictError(
+                f"Board version conflict. Expected version {expected_version}, current version {current_version}."
+            )
+
+        next_version = current_version + 1
+        cursor = connection.execute(
             """
             UPDATE boards
             SET board_json = ?, version = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE user_id = ?
+            WHERE user_id = ? AND version = ?
             """,
-            (serialized_board, next_version, user_id),
+            (serialized_board, next_version, user_id, expected_version),
         )
+        if cursor.rowcount != 1:
+            raise BoardVersionConflictError(
+                f"Board version conflict. Expected version {expected_version}, current version changed."
+            )
         connection.commit()
         return next_version
+    except BoardVersionConflictError:
+        connection.rollback()
+        raise
     except sqlite3.Error as error:
         connection.rollback()
         raise BoardStoreError("Unable to write board data.") from error

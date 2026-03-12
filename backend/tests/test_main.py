@@ -1,10 +1,11 @@
+import importlib
+import sys
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.ai_client import AIClientConfigError, AIClientUpstreamError
-from app.main import app
 
 
 @pytest.fixture
@@ -12,6 +13,16 @@ def isolated_db_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     db_path = tmp_path / "data" / "pm.sqlite3"
     monkeypatch.setenv("DATABASE_PATH", str(db_path))
     return db_path
+
+
+@pytest.fixture
+def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.delenv("SESSION_SECRET", raising=False)
+
+    from app.main import create_app
+
+    return TestClient(create_app())
 
 
 def login(client: TestClient) -> None:
@@ -22,30 +33,51 @@ def login(client: TestClient) -> None:
     assert response.status_code == 200
 
 
-def test_root_serves_html() -> None:
-    client = TestClient(app)
+def create_board_update_payload(client: TestClient) -> dict:
+    payload = client.get("/api/board").json()
+    return {
+        "board": payload["board"],
+        "version": payload["version"],
+    }
+
+
+def test_create_app_requires_session_secret_outside_test_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SESSION_SECRET", raising=False)
+    monkeypatch.delenv("APP_ENV", raising=False)
+
+    existing_module = sys.modules.pop("app.main", None)
+
+    try:
+        with pytest.raises(RuntimeError, match="SESSION_SECRET must be set"):
+            importlib.import_module("app.main")
+    finally:
+        sys.modules.pop("app.main", None)
+        if existing_module is not None:
+            sys.modules["app.main"] = existing_module
+
+
+def test_root_serves_html(client: TestClient) -> None:
     response = client.get("/")
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "<html" in response.text
 
 
-def test_health_endpoint() -> None:
-    client = TestClient(app)
+def test_health_endpoint(client: TestClient) -> None:
     response = client.get("/api/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
 
-def test_session_is_unauthenticated_by_default() -> None:
-    client = TestClient(app)
+def test_session_is_unauthenticated_by_default(client: TestClient) -> None:
     response = client.get("/api/session")
     assert response.status_code == 200
     assert response.json() == {"authenticated": False, "username": None}
 
 
-def test_login_with_valid_credentials_sets_session() -> None:
-    client = TestClient(app)
+def test_login_with_valid_credentials_sets_session(client: TestClient) -> None:
     response = client.post("/api/login", json={"username": "user", "password": "password"})
     assert response.status_code == 200
     assert response.json() == {"authenticated": True, "username": "user"}
@@ -56,15 +88,13 @@ def test_login_with_valid_credentials_sets_session() -> None:
     assert session_response.json() == {"authenticated": True, "username": "user"}
 
 
-def test_login_with_invalid_credentials_returns_401() -> None:
-    client = TestClient(app)
+def test_login_with_invalid_credentials_returns_401(client: TestClient) -> None:
     response = client.post("/api/login", json={"username": "user", "password": "wrong"})
     assert response.status_code == 401
     assert response.json() == {"detail": "Invalid credentials"}
 
 
-def test_logout_clears_session() -> None:
-    client = TestClient(app)
+def test_logout_clears_session(client: TestClient) -> None:
     login(client)
 
     logout_response = client.post("/api/logout")
@@ -76,22 +106,20 @@ def test_logout_clears_session() -> None:
     assert session_response.json() == {"authenticated": False, "username": None}
 
 
-def test_board_routes_require_authentication() -> None:
-    client = TestClient(app)
-
+def test_board_routes_require_authentication(client: TestClient) -> None:
     get_response = client.get("/api/board")
     assert get_response.status_code == 401
     assert get_response.json() == {"detail": "Unauthorized"}
 
-    put_response = client.put("/api/board", json={"columns": [], "cards": {}})
+    put_response = client.put("/api/board", json={"board": {"columns": [], "cards": {}}, "version": 0})
     assert put_response.status_code == 401
     assert put_response.json() == {"detail": "Unauthorized"}
 
 
 def test_get_board_creates_database_and_returns_default_board(
+    client: TestClient,
     isolated_db_path: Path,
 ) -> None:
-    client = TestClient(app)
     login(client)
 
     response = client.get("/api/board")
@@ -104,15 +132,16 @@ def test_get_board_creates_database_and_returns_default_board(
     assert isolated_db_path.exists()
 
 
-def test_put_board_updates_and_persists_board_data(isolated_db_path: Path) -> None:
-    client = TestClient(app)
+def test_put_board_updates_and_persists_board_data(
+    client: TestClient,
+    isolated_db_path: Path,
+) -> None:
     login(client)
 
-    initial = client.get("/api/board").json()
-    board = initial["board"]
-    board["columns"][0]["title"] = "Renamed Backlog"
+    update_payload = create_board_update_payload(client)
+    update_payload["board"]["columns"][0]["title"] = "Renamed Backlog"
 
-    update_response = client.put("/api/board", json=board)
+    update_response = client.put("/api/board", json=update_payload)
     assert update_response.status_code == 200
     assert update_response.json()["version"] == 2
 
@@ -122,42 +151,72 @@ def test_put_board_updates_and_persists_board_data(isolated_db_path: Path) -> No
     assert read_back.json()["version"] == 2
 
 
-def test_put_board_rejects_invalid_payload(isolated_db_path: Path) -> None:
-    client = TestClient(app)
+def test_put_board_rejects_stale_version(
+    client: TestClient,
+    isolated_db_path: Path,
+) -> None:
     login(client)
 
-    board = client.get("/api/board").json()["board"]
-    board["columns"][0]["cardIds"].append("missing-card")
+    initial_payload = create_board_update_payload(client)
+    initial_payload["board"]["columns"][0]["title"] = "First update"
+    first_update = client.put("/api/board", json=initial_payload)
+    assert first_update.status_code == 200
 
-    response = client.put("/api/board", json=board)
+    stale_payload = create_board_update_payload(client)
+    stale_payload["version"] = 1
+    stale_payload["board"]["columns"][0]["title"] = "Stale update"
+
+    stale_response = client.put("/api/board", json=stale_payload)
+    assert stale_response.status_code == 409
+    assert "Expected version 1, current version 2" in stale_response.json()["detail"]
+
+
+def test_put_board_rejects_invalid_payload(
+    client: TestClient,
+    isolated_db_path: Path,
+) -> None:
+    login(client)
+
+    update_payload = create_board_update_payload(client)
+    update_payload["board"]["columns"][0]["cardIds"].append("missing-card")
+
+    response = client.put("/api/board", json=update_payload)
     assert response.status_code == 422
     assert "Unknown card ids referenced by columns" in response.json()["detail"]
 
 
-def test_board_data_persists_across_clients(isolated_db_path: Path) -> None:
-    first_client = TestClient(app)
+def test_board_data_persists_across_clients(
+    isolated_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.delenv("SESSION_SECRET", raising=False)
+
+    from app.main import create_app
+
+    first_client = TestClient(create_app())
     login(first_client)
 
-    board = first_client.get("/api/board").json()["board"]
-    board["columns"][0]["title"] = "Persistent Title"
-    update_response = first_client.put("/api/board", json=board)
+    update_payload = create_board_update_payload(first_client)
+    update_payload["board"]["columns"][0]["title"] = "Persistent Title"
+    update_response = first_client.put("/api/board", json=update_payload)
     assert update_response.status_code == 200
 
-    second_client = TestClient(app)
+    second_client = TestClient(create_app())
     login(second_client)
     persisted_response = second_client.get("/api/board")
     assert persisted_response.status_code == 200
     assert persisted_response.json()["board"]["columns"][0]["title"] == "Persistent Title"
 
 
-def test_chat_route_requires_authentication() -> None:
-    client = TestClient(app)
+def test_chat_route_requires_authentication(client: TestClient) -> None:
     response = client.post("/api/chat", json={"message": "2+2"})
     assert response.status_code == 401
     assert response.json() == {"detail": "Unauthorized"}
 
 
 def test_chat_route_returns_message_and_empty_operations(
+    client: TestClient,
     isolated_db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -166,7 +225,6 @@ def test_chat_route_returns_message_and_empty_operations(
         lambda _: '{"message":"4","operations":[]}',
     )
 
-    client = TestClient(app)
     login(client)
 
     response = client.post("/api/chat", json={"message": "2+2"})
@@ -179,6 +237,7 @@ def test_chat_route_returns_message_and_empty_operations(
 
 
 def test_chat_route_maps_missing_key_to_500(
+    client: TestClient,
     isolated_db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -187,7 +246,6 @@ def test_chat_route_maps_missing_key_to_500(
 
     monkeypatch.setattr("app.chat_service.request_chat_completion", raise_config_error)
 
-    client = TestClient(app)
     login(client)
 
     response = client.post("/api/chat", json={"message": "2+2"})
@@ -196,6 +254,7 @@ def test_chat_route_maps_missing_key_to_500(
 
 
 def test_chat_route_maps_upstream_failure_to_502(
+    client: TestClient,
     isolated_db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -204,7 +263,6 @@ def test_chat_route_maps_upstream_failure_to_502(
 
     monkeypatch.setattr("app.chat_service.request_chat_completion", raise_upstream_error)
 
-    client = TestClient(app)
     login(client)
 
     response = client.post("/api/chat", json={"message": "2+2"})
@@ -213,12 +271,12 @@ def test_chat_route_maps_upstream_failure_to_502(
 
 
 def test_chat_route_rejects_invalid_structured_response(
+    client: TestClient,
     isolated_db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("app.chat_service.request_chat_completion", lambda _: "not json")
 
-    client = TestClient(app)
     login(client)
 
     response = client.post("/api/chat", json={"message": "create a card"})
@@ -227,6 +285,7 @@ def test_chat_route_rejects_invalid_structured_response(
 
 
 def test_chat_route_applies_operations_and_persists_board(
+    client: TestClient,
     isolated_db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -238,7 +297,6 @@ def test_chat_route_applies_operations_and_persists_board(
         ),
     )
 
-    client = TestClient(app)
     login(client)
 
     before = client.get("/api/board").json()

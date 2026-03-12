@@ -177,3 +177,5 @@ cython_debug/
 # Project runtime data
 backend/data/
 
+code_review.md
+launching.md

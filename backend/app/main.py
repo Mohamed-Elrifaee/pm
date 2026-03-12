@@ -1,23 +1,31 @@
-import os
 import logging
+import os
 from collections import Counter
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import APIRouter, FastAPI, HTTPException, Request, status
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
-from fastapi.staticfiles import StaticFiles
+
 from app.ai_client import AIClientConfigError, AIClientUpstreamError
-from app.board_store import BoardStoreError, get_or_create_board_for_user, save_board_for_user
+from app.board_store import (
+    BoardStoreError,
+    BoardVersionConflictError,
+    get_or_create_board_for_user,
+    save_board_for_user,
+)
 from app.chat_service import ChatOperationError, ChatResponseFormatError, process_chat_request
 
-app = FastAPI(title="Project Management MVP API")
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 VALID_USERNAME = "user"
 VALID_PASSWORD = "password"
+TEST_ENVIRONMENT = "test"
+
+router = APIRouter()
 
 
 class LoginRequest(BaseModel):
@@ -42,6 +50,11 @@ class BoardPayload(BaseModel):
     cards: dict[str, CardPayload]
 
 
+class BoardWriteRequest(BaseModel):
+    board: BoardPayload
+    version: int = Field(ge=0)
+
+
 class ChatHistoryItem(BaseModel):
     role: Literal["user", "assistant"]
     content: str = Field(min_length=1)
@@ -52,17 +65,28 @@ class ChatRequest(BaseModel):
     history: list[ChatHistoryItem] = Field(default_factory=list, max_length=20)
 
 
-app.add_middleware(
-    SessionMiddleware,
-    secret_key=os.environ.get("SESSION_SECRET", "pm-mvp-dev-session-secret"),
-    same_site="lax",
-    https_only=False,
-)
+def _get_session_secret() -> str:
+    configured_secret = os.environ.get("SESSION_SECRET")
+    if configured_secret:
+        return configured_secret
+
+    if os.environ.get("APP_ENV") == TEST_ENVIRONMENT:
+        return "pm-mvp-test-session-secret"
+
+    raise RuntimeError("SESSION_SECRET must be set before starting the application.")
 
 
-@app.get("/api/health")
-def read_health() -> dict[str, str]:
-    return {"status": "ok"}
+def create_app() -> FastAPI:
+    app = FastAPI(title="Project Management MVP API")
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=_get_session_secret(),
+        same_site="lax",
+        https_only=False,
+    )
+    app.include_router(router)
+    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+    return app
 
 
 def _get_authenticated_username(request: Request) -> str:
@@ -121,13 +145,18 @@ def _validate_board_payload(payload: BoardPayload) -> None:
         )
 
 
-@app.get("/api/session")
+@router.get("/api/health")
+def read_health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@router.get("/api/session")
 def read_session(request: Request) -> dict[str, str | bool | None]:
     username = request.session.get("username")
     return {"authenticated": bool(username), "username": username}
 
 
-@app.post("/api/login")
+@router.post("/api/login")
 def login(payload: LoginRequest, request: Request) -> dict[str, str | bool]:
     if payload.username != VALID_USERNAME or payload.password != VALID_PASSWORD:
         raise HTTPException(
@@ -139,13 +168,13 @@ def login(payload: LoginRequest, request: Request) -> dict[str, str | bool]:
     return {"authenticated": True, "username": payload.username}
 
 
-@app.post("/api/logout")
+@router.post("/api/logout")
 def logout(request: Request) -> dict[str, bool]:
     request.session.clear()
     return {"authenticated": False}
 
 
-@app.get("/api/board")
+@router.get("/api/board")
 def read_board(request: Request) -> dict[str, Any]:
     username = _get_authenticated_username(request)
 
@@ -161,14 +190,19 @@ def read_board(request: Request) -> dict[str, Any]:
     return {"board": board, "version": version}
 
 
-@app.put("/api/board")
-def write_board(payload: BoardPayload, request: Request) -> dict[str, Any]:
+@router.put("/api/board")
+def write_board(payload: BoardWriteRequest, request: Request) -> dict[str, Any]:
     username = _get_authenticated_username(request)
-    _validate_board_payload(payload)
-    board = payload.model_dump()
+    _validate_board_payload(payload.board)
+    board = payload.board.model_dump()
 
     try:
-        version = save_board_for_user(username, board)
+        version = save_board_for_user(username, board, payload.version)
+    except BoardVersionConflictError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from None
     except BoardStoreError:
         logger.exception("Database operation failed while writing board.")
         raise HTTPException(
@@ -179,7 +213,7 @@ def write_board(payload: BoardPayload, request: Request) -> dict[str, Any]:
     return {"board": board, "version": version}
 
 
-@app.post("/api/chat")
+@router.post("/api/chat")
 def chat(payload: ChatRequest, request: Request) -> dict[str, Any]:
     username = _get_authenticated_username(request)
 
@@ -211,4 +245,4 @@ def chat(payload: ChatRequest, request: Request) -> dict[str, Any]:
     return response_payload
 
 
-app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+app = create_app()
