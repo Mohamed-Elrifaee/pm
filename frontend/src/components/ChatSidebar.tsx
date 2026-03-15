@@ -4,14 +4,25 @@ import type { FormEvent } from "react";
 
 type ChatRole = "user" | "assistant";
 
-export type ChatOperationType = "create" | "edit" | "move" | "delete";
+export type ChatOperationType =
+  | "create"
+  | "edit"
+  | "move"
+  | "delete"
+  | "create_column"
+  | "delete_column"
+  | "create_workspace"
+  | "delete_workspace";
 
 export type ChatOperation = {
   type: ChatOperationType;
   cardId?: string;
+  workspaceId?: number;
   columnId?: string;
+  targetColumnId?: string;
   title?: string;
   details?: string;
+  name?: string;
   index?: number;
 };
 
@@ -68,7 +79,7 @@ export const ChatSidebar = ({
         </div>
 
         <p className="mt-3 text-sm leading-6 text-[var(--gray-text)]">
-          Ask AI to create, edit, move, or delete cards. Responses are designed to feel like a
+          Ask AI to manage cards, columns, and workspaces. Responses are designed to feel like a
           teammate, not a hidden settings panel.
         </p>
       </header>
@@ -83,7 +94,7 @@ export const ChatSidebar = ({
               No messages yet
             </p>
             <p className="mt-2 text-sm text-[var(--gray-text)]">
-              Try: "Create a weekly report card in Backlog"
+              Try: "Create an Operations workspace" or "Remove the Review column"
             </p>
           </div>
         ) : null}

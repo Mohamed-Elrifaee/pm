@@ -79,6 +79,39 @@ def test_apply_operations_delete_removes_card_everywhere() -> None:
     assert "card-1" not in updated["columns"][0]["cardIds"]
 
 
+def test_apply_operations_create_column_inserts_at_requested_index() -> None:
+    board = clone_default_board()
+    parsed = parse_structured_ai_response(
+        '{"message":"lane added","operations":[{"type":"create_column","title":"Blocked","index":1}]}'
+    )
+
+    updated, applied = apply_operations(board, parsed.operations)
+    assert applied[0]["type"] == "create_column"
+    assert updated["columns"][1]["title"] == "Blocked"
+    assert updated["columns"][1]["cardIds"] == []
+
+
+def test_apply_operations_delete_column_moves_cards_to_neighbor() -> None:
+    board = clone_default_board()
+    parsed = parse_structured_ai_response(
+        '{"message":"lane removed","operations":[{"type":"delete_column","columnId":"col-discovery"}]}'
+    )
+
+    updated, applied = apply_operations(board, parsed.operations)
+    assert applied[0] == {
+        "type": "delete_column",
+        "columnId": "col-discovery",
+        "targetColumnId": "col-backlog",
+    }
+    assert [column["id"] for column in updated["columns"]] == [
+        "col-backlog",
+        "col-progress",
+        "col-review",
+        "col-done",
+    ]
+    assert updated["columns"][0]["cardIds"] == ["card-1", "card-2", "card-3"]
+
+
 def test_apply_operations_invalid_move_does_not_mutate_original_board() -> None:
     board = clone_default_board()
     baseline = copy.deepcopy(board)

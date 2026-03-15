@@ -10,14 +10,41 @@ import {
 import { KanbanBoard } from "@/components/KanbanBoard";
 import type { BoardData } from "@/lib/kanban";
 
+type UserProfile = {
+  id: number;
+  fullName: string;
+  username: string;
+  email: string;
+};
+
 type SessionResponse = {
   authenticated: boolean;
-  username: string | null;
+  user: UserProfile | null;
+};
+
+type Workspace = {
+  id: number;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type WorkspacesResponse = {
+  workspaces: Workspace[];
+  selectedWorkspaceId?: number;
 };
 
 type LoginState = {
-  username: string;
+  identifier: string;
   password: string;
+};
+
+type SignupState = {
+  fullName: string;
+  username: string;
+  email: string;
+  password: string;
+  confirmPassword: string;
 };
 
 type BoardResponse = {
@@ -33,13 +60,23 @@ type ChatHistoryItem = {
 type ChatResponse = {
   message: string;
   operations: ChatOperation[];
+  workspaces: Workspace[];
+  selectedWorkspaceId: number;
   board: BoardData;
   version: number;
 };
 
 const defaultLoginState: LoginState = {
-  username: "",
+  identifier: "",
   password: "",
+};
+
+const defaultSignupState: SignupState = {
+  fullName: "",
+  username: "",
+  email: "",
+  password: "",
+  confirmPassword: "",
 };
 
 const cloneBoard = (source: BoardData): BoardData => ({
@@ -56,6 +93,19 @@ class SaveBoardError extends Error {
   }
 }
 
+const readErrorMessage = async (response: Response, fallback: string): Promise<string> => {
+  try {
+    const payload = (await response.json()) as { detail?: unknown };
+    if (typeof payload.detail === "string" && payload.detail.trim().length > 0) {
+      return payload.detail;
+    }
+  } catch {
+    return fallback;
+  }
+
+  return fallback;
+};
+
 const readSession = async (): Promise<SessionResponse> => {
   const response = await fetch("/api/session", {
     credentials: "include",
@@ -69,8 +119,71 @@ const readSession = async (): Promise<SessionResponse> => {
   return response.json();
 };
 
-const readBoard = async (): Promise<BoardResponse> => {
-  const response = await fetch("/api/board", {
+const readWorkspaces = async (): Promise<WorkspacesResponse> => {
+  const response = await fetch("/api/workspaces", {
+    credentials: "include",
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error("Failed to read workspaces.");
+  }
+
+  return response.json();
+};
+
+const createWorkspaceRequest = async (name: string): Promise<{ workspace: Workspace }> => {
+  const response = await fetch("/api/workspaces", {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ name }),
+  });
+
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, "Failed to create workspace."));
+  }
+
+  return response.json();
+};
+
+const renameWorkspaceRequest = async (
+  workspaceId: number,
+  name: string
+): Promise<{ workspace: Workspace }> => {
+  const response = await fetch(`/api/workspaces/${workspaceId}`, {
+    method: "PATCH",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ name }),
+  });
+
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, "Failed to rename workspace."));
+  }
+
+  return response.json();
+};
+
+const deleteWorkspaceRequest = async (workspaceId: number): Promise<WorkspacesResponse> => {
+  const response = await fetch(`/api/workspaces/${workspaceId}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, "Failed to delete workspace."));
+  }
+
+  return response.json();
+};
+
+const readBoard = async (workspaceId: number): Promise<BoardResponse> => {
+  const response = await fetch(`/api/board?workspaceId=${workspaceId}`, {
     credentials: "include",
     cache: "no-store",
   });
@@ -82,14 +195,18 @@ const readBoard = async (): Promise<BoardResponse> => {
   return response.json();
 };
 
-const writeBoard = async (board: BoardData, version: number): Promise<BoardResponse> => {
+const writeBoard = async (
+  workspaceId: number,
+  board: BoardData,
+  version: number
+): Promise<BoardResponse> => {
   const response = await fetch("/api/board", {
     method: "PUT",
     credentials: "include",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ board, version }),
+    body: JSON.stringify({ workspaceId, board, version }),
   });
 
   if (!response.ok) {
@@ -100,6 +217,7 @@ const writeBoard = async (board: BoardData, version: number): Promise<BoardRespo
 };
 
 const sendChatMessage = async (
+  workspaceId: number,
   message: string,
   history: ChatHistoryItem[]
 ): Promise<ChatResponse> => {
@@ -109,7 +227,7 @@ const sendChatMessage = async (
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ message, history }),
+    body: JSON.stringify({ workspaceId, message, history }),
   });
 
   if (!response.ok) {
@@ -122,12 +240,43 @@ const sendChatMessage = async (
 const createMessageId = (): string =>
   `msg-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
+const getWorkspaceStorageKey = (userId: number) => `pm-active-workspace-${userId}`;
+
+const readStoredWorkspaceId = (userId: number): number | null => {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const raw = window.localStorage.getItem(getWorkspaceStorageKey(userId));
+  if (!raw) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isInteger(parsed) ? parsed : null;
+};
+
+const writeStoredWorkspaceId = (userId: number, workspaceId: number) => {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(getWorkspaceStorageKey(userId), String(workspaceId));
+};
+
 export const AppShell = () => {
   const [session, setSession] = useState<SessionResponse | null>(null);
   const [isCheckingSession, setIsCheckingSession] = useState(true);
+  const [authMode, setAuthMode] = useState<"login" | "signup">("login");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [loginState, setLoginState] = useState<LoginState>(defaultLoginState);
+  const [signupState, setSignupState] = useState<SignupState>(defaultSignupState);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<number | null>(null);
+  const [isWorkspaceLoading, setIsWorkspaceLoading] = useState(false);
+  const [isWorkspaceMutating, setIsWorkspaceMutating] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [board, setBoard] = useState<BoardData | null>(null);
   const [isBoardLoading, setIsBoardLoading] = useState(false);
   const [isBoardSaving, setIsBoardSaving] = useState(false);
@@ -142,8 +291,22 @@ export const AppShell = () => {
   const confirmedBoardRef = useRef<BoardData | null>(null);
   const queuedBoardRef = useRef<BoardData | null>(null);
   const isBoardSaveLoopRunningRef = useRef(false);
+  const selectedWorkspaceIdRef = useRef<number | null>(null);
+  const pendingWorkspaceHydrationRef = useRef<{
+    workspaceId: number;
+    board: BoardData;
+    version: number;
+  } | null>(null);
 
-  const applyConfirmedBoard = (nextBoard: BoardData, nextVersion: number) => {
+  const applyConfirmedBoard = (
+    nextBoard: BoardData,
+    nextVersion: number,
+    workspaceId: number
+  ) => {
+    if (selectedWorkspaceIdRef.current !== workspaceId) {
+      return;
+    }
+
     const confirmedBoard = cloneBoard(nextBoard);
     confirmedBoardRef.current = confirmedBoard;
     boardVersionRef.current = nextVersion;
@@ -155,32 +318,61 @@ export const AppShell = () => {
     confirmedBoardRef.current = null;
     queuedBoardRef.current = null;
     isBoardSaveLoopRunningRef.current = false;
+    pendingWorkspaceHydrationRef.current = null;
     setBoard(null);
     setBoardError(null);
     setIsBoardSaving(false);
+    setIsBoardLoading(false);
   };
 
-  const loadBoard = async () => {
+  const resetWorkspaceState = () => {
+    setWorkspaces([]);
+    setSelectedWorkspaceId(null);
+    selectedWorkspaceIdRef.current = null;
+    setWorkspaceError(null);
+    setIsWorkspaceLoading(false);
+    setIsWorkspaceMutating(false);
+  };
+
+  const resetChatState = () => {
+    setChatMessages([]);
+    setPendingChatMessage(null);
+    setChatDraft("");
+    setChatError(null);
+    setIsChatSubmitting(false);
+  };
+
+  const loadBoard = async (workspaceId: number) => {
     setBoardError(null);
     setIsBoardLoading(true);
 
     try {
-      const boardResponse = await readBoard();
-      applyConfirmedBoard(boardResponse.board, boardResponse.version);
+      const boardResponse = await readBoard(workspaceId);
+      applyConfirmedBoard(boardResponse.board, boardResponse.version, workspaceId);
     } catch {
-      setBoardError("Unable to load board right now. Please retry.");
+      if (selectedWorkspaceIdRef.current === workspaceId) {
+        setBoardError("Unable to load board right now. Please retry.");
+      }
     } finally {
-      setIsBoardLoading(false);
+      if (selectedWorkspaceIdRef.current === workspaceId) {
+        setIsBoardLoading(false);
+      }
     }
   };
 
-  const flushBoardSaveQueue = async () => {
-    if (isBoardSaveLoopRunningRef.current || boardVersionRef.current === null || !queuedBoardRef.current) {
+  const flushBoardSaveQueue = async (workspaceId: number) => {
+    if (
+      isBoardSaveLoopRunningRef.current ||
+      boardVersionRef.current === null ||
+      !queuedBoardRef.current
+    ) {
       return;
     }
 
     isBoardSaveLoopRunningRef.current = true;
-    setIsBoardSaving(true);
+    if (selectedWorkspaceIdRef.current === workspaceId) {
+      setIsBoardSaving(true);
+    }
 
     try {
       while (queuedBoardRef.current && boardVersionRef.current !== null) {
@@ -189,7 +381,11 @@ export const AppShell = () => {
         queuedBoardRef.current = null;
 
         try {
-          const saved = await writeBoard(boardToSave, versionToSave);
+          const saved = await writeBoard(workspaceId, boardToSave, versionToSave);
+          if (selectedWorkspaceIdRef.current !== workspaceId) {
+            return;
+          }
+
           const hasNewerBoardQueued = queuedBoardRef.current !== null;
           confirmedBoardRef.current = cloneBoard(saved.board);
           boardVersionRef.current = saved.version;
@@ -202,10 +398,14 @@ export const AppShell = () => {
             continue;
           }
 
+          if (selectedWorkspaceIdRef.current !== workspaceId) {
+            return;
+          }
+
           if (error instanceof SaveBoardError && error.status === 409) {
             try {
-              const latestBoard = await readBoard();
-              applyConfirmedBoard(latestBoard.board, latestBoard.version);
+              const latestBoard = await readBoard(workspaceId);
+              applyConfirmedBoard(latestBoard.board, latestBoard.version, workspaceId);
               setBoardError("Board changed before this save completed. Latest board loaded.");
             } catch {
               setBoardError(
@@ -224,10 +424,38 @@ export const AppShell = () => {
       }
     } finally {
       isBoardSaveLoopRunningRef.current = false;
-      setIsBoardSaving(false);
-      if (queuedBoardRef.current) {
-        void flushBoardSaveQueue();
+      if (selectedWorkspaceIdRef.current === workspaceId) {
+        setIsBoardSaving(false);
+        if (queuedBoardRef.current) {
+          void flushBoardSaveQueue(workspaceId);
+        }
       }
+    }
+  };
+
+  const loadWorkspaces = async (preferredWorkspaceId?: number | null) => {
+    setWorkspaceError(null);
+    setIsWorkspaceLoading(true);
+
+    try {
+      const response = await readWorkspaces();
+      const nextWorkspaces = response.workspaces;
+      const storedWorkspaceId = session?.user ? readStoredWorkspaceId(session.user.id) : null;
+      const preferredId =
+        preferredWorkspaceId ?? selectedWorkspaceIdRef.current ?? storedWorkspaceId ?? null;
+      const nextSelectedWorkspaceId = nextWorkspaces.some(
+        (workspace) => workspace.id === preferredId
+      )
+        ? preferredId
+        : nextWorkspaces[0]?.id ?? null;
+
+      setWorkspaces(nextWorkspaces);
+      setSelectedWorkspaceId(nextSelectedWorkspaceId);
+      selectedWorkspaceIdRef.current = nextSelectedWorkspaceId;
+    } catch {
+      setWorkspaceError("Unable to load workspaces right now. Please retry.");
+    } finally {
+      setIsWorkspaceLoading(false);
     }
   };
 
@@ -242,8 +470,8 @@ export const AppShell = () => {
         }
       } catch {
         if (isMounted) {
-          setSession({ authenticated: false, username: null });
-          setError("Unable to verify session. Please try signing in.");
+          setSession({ authenticated: false, user: null });
+          setAuthError("Unable to verify session. Please sign in again.");
         }
       } finally {
         if (isMounted) {
@@ -261,21 +489,51 @@ export const AppShell = () => {
 
   useEffect(() => {
     if (!session?.authenticated) {
+      resetWorkspaceState();
       resetBoardState();
-      setChatMessages([]);
-      setPendingChatMessage(null);
-      setChatDraft("");
-      setChatError(null);
-      setIsChatSubmitting(false);
+      resetChatState();
       return;
     }
 
-    void loadBoard();
+    void loadWorkspaces();
   }, [session?.authenticated]);
+
+  useEffect(() => {
+    selectedWorkspaceIdRef.current = selectedWorkspaceId;
+    if (session?.user && selectedWorkspaceId) {
+      writeStoredWorkspaceId(session.user.id, selectedWorkspaceId);
+    }
+  }, [selectedWorkspaceId, session?.user]);
+
+  useEffect(() => {
+    if (!session?.authenticated || selectedWorkspaceId === null) {
+      return;
+    }
+
+    const pendingWorkspaceHydration = pendingWorkspaceHydrationRef.current;
+    if (
+      pendingWorkspaceHydration &&
+      pendingWorkspaceHydration.workspaceId === selectedWorkspaceId
+    ) {
+      pendingWorkspaceHydrationRef.current = null;
+      applyConfirmedBoard(
+        pendingWorkspaceHydration.board,
+        pendingWorkspaceHydration.version,
+        selectedWorkspaceId
+      );
+      setBoardError(null);
+      setIsBoardLoading(false);
+      return;
+    }
+
+    resetBoardState();
+    resetChatState();
+    void loadBoard(selectedWorkspaceId);
+  }, [selectedWorkspaceId, session?.authenticated]);
 
   const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    setError(null);
+    setAuthError(null);
     setIsSubmitting(true);
 
     try {
@@ -289,7 +547,7 @@ export const AppShell = () => {
       });
 
       if (!response.ok) {
-        setError("Invalid username or password.");
+        setAuthError(await readErrorMessage(response, "Sign in failed. Please try again."));
         return;
       }
 
@@ -297,14 +555,55 @@ export const AppShell = () => {
       setSession(nextSession);
       setLoginState(defaultLoginState);
     } catch {
-      setError("Sign in failed. Please try again.");
+      setAuthError("Sign in failed. Please try again.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleSignup = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setAuthError(null);
+
+    if (signupState.password !== signupState.confirmPassword) {
+      setAuthError("Passwords do not match.");
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      const response = await fetch("/api/signup", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          fullName: signupState.fullName,
+          username: signupState.username,
+          email: signupState.email,
+          password: signupState.password,
+        }),
+      });
+
+      if (!response.ok) {
+        setAuthError(await readErrorMessage(response, "Account creation failed. Please try again."));
+        return;
+      }
+
+      const nextSession = (await response.json()) as SessionResponse;
+      setSession(nextSession);
+      setSignupState(defaultSignupState);
+    } catch {
+      setAuthError("Account creation failed. Please try again.");
     } finally {
       setIsSubmitting(false);
     }
   };
 
   const handleLogout = async () => {
-    setError(null);
+    setAuthError(null);
     setIsSubmitting(true);
 
     try {
@@ -313,27 +612,79 @@ export const AppShell = () => {
         credentials: "include",
       });
     } finally {
-      setSession({ authenticated: false, username: null });
+      setSession({ authenticated: false, user: null });
+      resetWorkspaceState();
       resetBoardState();
-      setChatMessages([]);
-      setPendingChatMessage(null);
-      setChatDraft("");
-      setChatError(null);
-      setIsChatSubmitting(false);
+      resetChatState();
       setIsSubmitting(false);
     }
   };
 
+  const handleCreateWorkspace = async (name: string) => {
+    setWorkspaceError(null);
+    setIsWorkspaceMutating(true);
+
+    try {
+      const response = await createWorkspaceRequest(name);
+      setWorkspaces((current) => [...current, response.workspace]);
+      setSelectedWorkspaceId(response.workspace.id);
+      selectedWorkspaceIdRef.current = response.workspace.id;
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : "Unable to create workspace.");
+    } finally {
+      setIsWorkspaceMutating(false);
+    }
+  };
+
+  const handleRenameWorkspace = async (workspaceId: number, name: string) => {
+    setWorkspaceError(null);
+    setIsWorkspaceMutating(true);
+
+    try {
+      const response = await renameWorkspaceRequest(workspaceId, name);
+      setWorkspaces((current) =>
+        current.map((workspace) =>
+          workspace.id === workspaceId ? response.workspace : workspace
+        )
+      );
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : "Unable to rename workspace.");
+    } finally {
+      setIsWorkspaceMutating(false);
+    }
+  };
+
+  const handleDeleteWorkspace = async (workspaceId: number) => {
+    setWorkspaceError(null);
+    setIsWorkspaceMutating(true);
+
+    try {
+      const response = await deleteWorkspaceRequest(workspaceId);
+      setWorkspaces(response.workspaces);
+      setSelectedWorkspaceId(response.selectedWorkspaceId ?? response.workspaces[0]?.id ?? null);
+      selectedWorkspaceIdRef.current =
+        response.selectedWorkspaceId ?? response.workspaces[0]?.id ?? null;
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : "Unable to delete workspace.");
+    } finally {
+      setIsWorkspaceMutating(false);
+    }
+  };
+
   const handleBoardChange = async (nextBoard: BoardData) => {
+    if (selectedWorkspaceId === null) {
+      return;
+    }
+
     const optimisticBoard = cloneBoard(nextBoard);
     setBoard(optimisticBoard);
     setBoardError(null);
     queuedBoardRef.current = optimisticBoard;
-    await flushBoardSaveQueue();
+    await flushBoardSaveQueue(selectedWorkspaceId);
   };
 
   const handleChatSubmit = async () => {
-    if (!board) {
+    if (!board || selectedWorkspaceId === null) {
       return;
     }
 
@@ -359,8 +710,23 @@ export const AppShell = () => {
     setIsChatSubmitting(true);
 
     try {
-      const response = await sendChatMessage(trimmedMessage, history);
-      applyConfirmedBoard(response.board, response.version);
+      const response = await sendChatMessage(selectedWorkspaceId, trimmedMessage, history);
+      if (selectedWorkspaceIdRef.current !== selectedWorkspaceId) {
+        return;
+      }
+
+      setWorkspaces(response.workspaces);
+      if (response.selectedWorkspaceId !== selectedWorkspaceId) {
+        pendingWorkspaceHydrationRef.current = {
+          workspaceId: response.selectedWorkspaceId,
+          board: response.board,
+          version: response.version,
+        };
+        selectedWorkspaceIdRef.current = response.selectedWorkspaceId;
+        setSelectedWorkspaceId(response.selectedWorkspaceId);
+      } else {
+        applyConfirmedBoard(response.board, response.version, selectedWorkspaceId);
+      }
       setBoardError(null);
       setChatMessages((prev) => [
         ...prev,
@@ -374,11 +740,17 @@ export const AppShell = () => {
       ]);
       setPendingChatMessage(null);
     } catch {
+      if (selectedWorkspaceIdRef.current !== selectedWorkspaceId) {
+        return;
+      }
+
       setPendingChatMessage(null);
       setChatDraft(trimmedMessage);
       setChatError("Unable to get AI response right now. Please try again.");
     } finally {
-      setIsChatSubmitting(false);
+      if (selectedWorkspaceIdRef.current === selectedWorkspaceId) {
+        setIsChatSubmitting(false);
+      }
     }
   };
 
@@ -391,13 +763,13 @@ export const AppShell = () => {
       <main className="mx-auto flex min-h-screen max-w-[640px] items-center justify-center px-6">
         <section className="panel-shell rise-in w-full rounded-[34px] px-8 py-12 text-center">
           <p className="text-[11px] font-semibold uppercase tracking-[0.35em] text-[var(--gray-text)]">
-            Project Management MVP
+            Project Management Platform
           </p>
           <h1 className="mt-4 font-display text-4xl font-semibold text-[var(--navy-dark)]">
             Preparing your workspace
           </h1>
           <p className="mt-4 text-sm leading-7 text-[var(--gray-text)]">
-            Checking session...
+            Checking your account session...
           </p>
         </section>
       </main>
@@ -405,6 +777,50 @@ export const AppShell = () => {
   }
 
   if (session?.authenticated) {
+    if (isWorkspaceLoading) {
+      return (
+        <main className="mx-auto flex min-h-screen max-w-[640px] items-center justify-center px-6">
+          <section className="panel-shell rise-in w-full rounded-[34px] px-8 py-12 text-center">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.35em] text-[var(--gray-text)]">
+              Workspace Hub
+            </p>
+            <h1 className="mt-4 font-display text-4xl font-semibold text-[var(--navy-dark)]">
+              Loading workspaces...
+            </h1>
+          </section>
+        </main>
+      );
+    }
+
+    if (!selectedWorkspaceId) {
+      return (
+        <main className="mx-auto flex min-h-screen max-w-[640px] items-center justify-center px-6">
+          <section className="panel-shell rise-in w-full rounded-[34px] px-8 py-12 text-center">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.35em] text-[var(--gray-text)]">
+              Workspace Hub
+            </p>
+            <h1 className="mt-4 font-display text-4xl font-semibold text-[var(--navy-dark)]">
+              No workspace selected
+            </h1>
+            {workspaceError ? (
+              <div className="mt-4 space-y-3">
+                <p className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600">
+                  {workspaceError}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void loadWorkspaces()}
+                  className="rounded-full border border-[rgba(3,33,71,0.12)] bg-white px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.24em] text-[var(--navy-dark)] transition hover:-translate-y-0.5 hover:border-[var(--primary-blue)] hover:text-[var(--primary-blue)]"
+                >
+                  Retry
+                </button>
+              </div>
+            ) : null}
+          </section>
+        </main>
+      );
+    }
+
     if (isBoardLoading || !board) {
       return (
         <main className="mx-auto flex min-h-screen max-w-[640px] items-center justify-center px-6">
@@ -415,20 +831,27 @@ export const AppShell = () => {
             <h1 className="mt-4 font-display text-4xl font-semibold text-[var(--navy-dark)]">
               Loading board...
             </h1>
-            {boardError ? (
+            {(boardError || workspaceError) && (
               <div className="mt-4 space-y-3">
-                <p className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600">
-                  {boardError}
-                </p>
+                {workspaceError ? (
+                  <p className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600">
+                    {workspaceError}
+                  </p>
+                ) : null}
+                {boardError ? (
+                  <p className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600">
+                    {boardError}
+                  </p>
+                ) : null}
                 <button
                   type="button"
-                  onClick={() => void loadBoard()}
+                  onClick={() => void loadBoard(selectedWorkspaceId)}
                   className="rounded-full border border-[rgba(3,33,71,0.12)] bg-white px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.24em] text-[var(--navy-dark)] transition hover:-translate-y-0.5 hover:border-[var(--primary-blue)] hover:text-[var(--primary-blue)]"
                 >
                   Retry
                 </button>
               </div>
-            ) : null}
+            )}
           </div>
         </main>
       );
@@ -437,11 +860,20 @@ export const AppShell = () => {
     return (
       <KanbanBoard
         onLogout={handleLogout}
-        username={session.username}
+        username={session.user?.username}
+        displayName={session.user?.fullName}
         board={board}
         onBoardChange={(next) => void handleBoardChange(next)}
         boardError={boardError}
         isSavingBoard={isBoardSaving}
+        workspaces={workspaces}
+        activeWorkspaceId={selectedWorkspaceId}
+        onSelectWorkspace={setSelectedWorkspaceId}
+        onCreateWorkspace={(name) => void handleCreateWorkspace(name)}
+        onRenameWorkspace={(workspaceId, name) => void handleRenameWorkspace(workspaceId, name)}
+        onDeleteWorkspace={(workspaceId) => void handleDeleteWorkspace(workspaceId)}
+        isManagingWorkspaces={isWorkspaceMutating}
+        workspaceError={workspaceError}
         chatSidebar={
           <ChatSidebar
             messages={renderedChatMessages}
@@ -457,51 +889,50 @@ export const AppShell = () => {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-[1280px] items-center px-4 py-10 sm:px-6">
-      <section className="grid w-full gap-6 lg:grid-cols-[minmax(0,1.1fr)_480px]">
+    <main className="mx-auto flex min-h-screen max-w-[1360px] items-center px-4 py-10 sm:px-6">
+      <section className="grid w-full gap-6 lg:grid-cols-[minmax(0,1.12fr)_520px]">
         <div className="panel-shell rise-in soft-grid relative overflow-hidden rounded-[38px] p-8 sm:p-10">
           <div className="relative z-10">
             <div className="flex flex-wrap items-center gap-3">
               <span className="rounded-full border border-[rgba(3,33,71,0.08)] bg-[rgba(255,255,255,0.82)] px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.32em] text-[var(--gray-text)]">
-                Project Management MVP
+                Project Management Platform
               </span>
               <span className="rounded-full bg-[rgba(236,173,10,0.15)] px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--navy-dark)]">
-                Local Workspace
+                Account Access
               </span>
             </div>
 
             <h1 className="mt-6 max-w-2xl font-display text-4xl font-semibold leading-tight text-[var(--navy-dark)] sm:text-5xl">
-              Your board, with more presence
+              Professional project delivery, without the demo shortcuts
             </h1>
             <p className="mt-4 max-w-xl text-sm leading-7 text-[var(--gray-text)] sm:text-[15px]">
-              Step into the board through a cleaner launch surface. The Kanban area keeps the MVP
-              simplicity, but now the workflow can expand with new lanes and the AI agent stays
-              tucked to the side until you need it.
+              Create an account, manage separate workspaces, and keep every board backed by the
+              server so the product is ready for a more serious deployment path.
             </p>
 
             <div className="mt-8 grid gap-3 sm:grid-cols-3">
               <article className="rounded-[26px] border border-[rgba(3,33,71,0.08)] bg-[rgba(255,255,255,0.76)] px-4 py-4 shadow-[0_18px_34px_rgba(3,33,71,0.08)]">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--gray-text)]">
-                  Board Shape
-                </p>
-                <p className="mt-3 font-display text-2xl font-semibold text-[var(--navy-dark)]">
-                  Flexible lanes
-                </p>
-              </article>
-              <article className="rounded-[26px] border border-[rgba(3,33,71,0.08)] bg-[rgba(255,255,255,0.76)] px-4 py-4 shadow-[0_18px_34px_rgba(3,33,71,0.08)]">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--gray-text)]">
-                  AI Actions
-                </p>
-                <p className="mt-3 font-display text-2xl font-semibold text-[var(--navy-dark)]">
-                  Create. Move. Edit.
-                </p>
-              </article>
-              <article className="rounded-[26px] border border-[rgba(3,33,71,0.08)] bg-[rgba(255,255,255,0.76)] px-4 py-4 shadow-[0_18px_34px_rgba(3,33,71,0.08)]">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--gray-text)]">
                   Access
                 </p>
                 <p className="mt-3 font-display text-2xl font-semibold text-[var(--navy-dark)]">
-                  Demo login
+                  Real signup flow
+                </p>
+              </article>
+              <article className="rounded-[26px] border border-[rgba(3,33,71,0.08)] bg-[rgba(255,255,255,0.76)] px-4 py-4 shadow-[0_18px_34px_rgba(3,33,71,0.08)]">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--gray-text)]">
+                  Structure
+                </p>
+                <p className="mt-3 font-display text-2xl font-semibold text-[var(--navy-dark)]">
+                  Multiple workspaces
+                </p>
+              </article>
+              <article className="rounded-[26px] border border-[rgba(3,33,71,0.08)] bg-[rgba(255,255,255,0.76)] px-4 py-4 shadow-[0_18px_34px_rgba(3,33,71,0.08)]">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--gray-text)]">
+                  Readiness
+                </p>
+                <p className="mt-3 font-display text-2xl font-semibold text-[var(--navy-dark)]">
+                  Backend persistence
                 </p>
               </article>
             </div>
@@ -509,73 +940,204 @@ export const AppShell = () => {
         </div>
 
         <section className="panel-shell rise-in rounded-[38px] p-8 [animation-delay:120ms]">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.35em] text-[var(--gray-text)]">
-            Workspace Access
-          </p>
-          <h2 className="mt-4 font-display text-3xl font-semibold text-[var(--navy-dark)]">
-            Sign in
-          </h2>
-          <p className="mt-3 text-sm leading-7 text-[var(--gray-text)]">
-            Use the demo credentials to enter the board.
-          </p>
-          <div className="mt-4 rounded-[24px] border border-[rgba(32,157,215,0.14)] bg-[rgba(32,157,215,0.08)] px-4 py-4">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--primary-blue)]">
-              Demo Credentials
-            </p>
-            <p className="mt-2 text-sm font-semibold text-[var(--navy-dark)]">
-              Username: user
-            </p>
-            <p className="mt-1 text-sm font-semibold text-[var(--navy-dark)]">
-              Password: password
-            </p>
+          <div className="flex gap-2 rounded-full bg-[rgba(3,33,71,0.04)] p-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                setAuthMode("login");
+                setAuthError(null);
+              }}
+              className={`flex-1 rounded-full px-4 py-3 text-xs font-semibold uppercase tracking-[0.24em] transition ${
+                authMode === "login"
+                  ? "bg-white text-[var(--navy-dark)] shadow-[0_12px_24px_rgba(3,33,71,0.08)]"
+                  : "text-[var(--gray-text)]"
+              }`}
+            >
+              Sign in
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setAuthMode("signup");
+                setAuthError(null);
+              }}
+              className={`flex-1 rounded-full px-4 py-3 text-xs font-semibold uppercase tracking-[0.24em] transition ${
+                authMode === "signup"
+                  ? "bg-white text-[var(--navy-dark)] shadow-[0_12px_24px_rgba(3,33,71,0.08)]"
+                  : "text-[var(--gray-text)]"
+              }`}
+            >
+              Create account
+            </button>
           </div>
 
-          <form onSubmit={handleLogin} className="mt-6 space-y-4">
-            <label className="block">
-              <span className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--gray-text)]">
-                Username
-              </span>
-              <input
-                value={loginState.username}
-                onChange={(event) =>
-                  setLoginState((prev) => ({ ...prev, username: event.target.value }))
-                }
-                className="mt-3 w-full rounded-[22px] border border-[rgba(3,33,71,0.08)] bg-white px-4 py-3 text-sm font-medium text-[var(--navy-dark)] outline-none transition focus:border-[rgba(32,157,215,0.34)]"
-                required
-                autoComplete="username"
-              />
-            </label>
-
-            <label className="block">
-              <span className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--gray-text)]">
-                Password
-              </span>
-              <input
-                type="password"
-                value={loginState.password}
-                onChange={(event) =>
-                  setLoginState((prev) => ({ ...prev, password: event.target.value }))
-                }
-                className="mt-3 w-full rounded-[22px] border border-[rgba(3,33,71,0.08)] bg-white px-4 py-3 text-sm font-medium text-[var(--navy-dark)] outline-none transition focus:border-[rgba(32,157,215,0.34)]"
-                required
-                autoComplete="current-password"
-              />
-            </label>
-
-            {error ? (
-              <p className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600" role="alert">
-                {error}
+          {authMode === "login" ? (
+            <>
+              <p className="mt-6 text-[11px] font-semibold uppercase tracking-[0.35em] text-[var(--gray-text)]">
+                Workspace Access
               </p>
-            ) : null}
+              <h2 className="mt-4 font-display text-3xl font-semibold text-[var(--navy-dark)]">
+                Sign in
+              </h2>
+              <p className="mt-3 text-sm leading-7 text-[var(--gray-text)]">
+                Use your account email or username to continue into your active workspace.
+              </p>
 
-            <button
-              type="submit"
-              className="w-full rounded-full bg-[linear-gradient(135deg,_var(--secondary-purple),_#9157a9)] px-4 py-3 text-xs font-semibold uppercase tracking-[0.24em] text-white transition hover:-translate-y-0.5 hover:shadow-[0_18px_30px_rgba(117,57,145,0.25)] disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={isSubmitting}
-            >
-              {isSubmitting ? "Signing in..." : "Sign in"}
-            </button>
-          </form>
+              <form onSubmit={handleLogin} className="mt-6 space-y-4">
+                <label className="block">
+                  <span className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--gray-text)]">
+                    Email or username
+                  </span>
+                  <input
+                    value={loginState.identifier}
+                    onChange={(event) =>
+                      setLoginState((prev) => ({ ...prev, identifier: event.target.value }))
+                    }
+                    className="mt-3 w-full rounded-[22px] border border-[rgba(3,33,71,0.08)] bg-white px-4 py-3 text-sm font-medium text-[var(--navy-dark)] outline-none transition focus:border-[rgba(32,157,215,0.34)]"
+                    required
+                    autoComplete="username"
+                    aria-label="Email or username"
+                  />
+                </label>
+
+                <label className="block">
+                  <span className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--gray-text)]">
+                    Password
+                  </span>
+                  <input
+                    type="password"
+                    value={loginState.password}
+                    onChange={(event) =>
+                      setLoginState((prev) => ({ ...prev, password: event.target.value }))
+                    }
+                    className="mt-3 w-full rounded-[22px] border border-[rgba(3,33,71,0.08)] bg-white px-4 py-3 text-sm font-medium text-[var(--navy-dark)] outline-none transition focus:border-[rgba(32,157,215,0.34)]"
+                    required
+                    autoComplete="current-password"
+                  />
+                </label>
+
+                {authError ? (
+                  <p className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600" role="alert">
+                    {authError}
+                  </p>
+                ) : null}
+
+                <button
+                  type="submit"
+                  className="w-full rounded-full bg-[linear-gradient(135deg,_var(--secondary-purple),_#9157a9)] px-4 py-3 text-xs font-semibold uppercase tracking-[0.24em] text-white transition hover:-translate-y-0.5 hover:shadow-[0_18px_30px_rgba(117,57,145,0.25)] disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={isSubmitting}
+                >
+                  {isSubmitting ? "Signing in..." : "Sign in"}
+                </button>
+              </form>
+            </>
+          ) : (
+            <>
+              <p className="mt-6 text-[11px] font-semibold uppercase tracking-[0.35em] text-[var(--gray-text)]">
+                New Account
+              </p>
+              <h2 className="mt-4 font-display text-3xl font-semibold text-[var(--navy-dark)]">
+                Create account
+              </h2>
+              <p className="mt-3 text-sm leading-7 text-[var(--gray-text)]">
+                Start with a dedicated account and a default workspace that you can expand from.
+              </p>
+
+              <form onSubmit={handleSignup} className="mt-6 space-y-4">
+                <label className="block">
+                  <span className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--gray-text)]">
+                    Full name
+                  </span>
+                  <input
+                    value={signupState.fullName}
+                    onChange={(event) =>
+                      setSignupState((prev) => ({ ...prev, fullName: event.target.value }))
+                    }
+                    className="mt-3 w-full rounded-[22px] border border-[rgba(3,33,71,0.08)] bg-white px-4 py-3 text-sm font-medium text-[var(--navy-dark)] outline-none transition focus:border-[rgba(32,157,215,0.34)]"
+                    required
+                    autoComplete="name"
+                  />
+                </label>
+
+                <label className="block">
+                  <span className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--gray-text)]">
+                    Username
+                  </span>
+                  <input
+                    value={signupState.username}
+                    onChange={(event) =>
+                      setSignupState((prev) => ({ ...prev, username: event.target.value }))
+                    }
+                    className="mt-3 w-full rounded-[22px] border border-[rgba(3,33,71,0.08)] bg-white px-4 py-3 text-sm font-medium text-[var(--navy-dark)] outline-none transition focus:border-[rgba(32,157,215,0.34)]"
+                    required
+                    autoComplete="username"
+                  />
+                </label>
+
+                <label className="block">
+                  <span className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--gray-text)]">
+                    Email
+                  </span>
+                  <input
+                    type="email"
+                    value={signupState.email}
+                    onChange={(event) =>
+                      setSignupState((prev) => ({ ...prev, email: event.target.value }))
+                    }
+                    className="mt-3 w-full rounded-[22px] border border-[rgba(3,33,71,0.08)] bg-white px-4 py-3 text-sm font-medium text-[var(--navy-dark)] outline-none transition focus:border-[rgba(32,157,215,0.34)]"
+                    required
+                    autoComplete="email"
+                  />
+                </label>
+
+                <label className="block">
+                  <span className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--gray-text)]">
+                    Password
+                  </span>
+                  <input
+                    type="password"
+                    value={signupState.password}
+                    onChange={(event) =>
+                      setSignupState((prev) => ({ ...prev, password: event.target.value }))
+                    }
+                    className="mt-3 w-full rounded-[22px] border border-[rgba(3,33,71,0.08)] bg-white px-4 py-3 text-sm font-medium text-[var(--navy-dark)] outline-none transition focus:border-[rgba(32,157,215,0.34)]"
+                    required
+                    autoComplete="new-password"
+                  />
+                </label>
+
+                <label className="block">
+                  <span className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--gray-text)]">
+                    Confirm password
+                  </span>
+                  <input
+                    type="password"
+                    value={signupState.confirmPassword}
+                    onChange={(event) =>
+                      setSignupState((prev) => ({ ...prev, confirmPassword: event.target.value }))
+                    }
+                    className="mt-3 w-full rounded-[22px] border border-[rgba(3,33,71,0.08)] bg-white px-4 py-3 text-sm font-medium text-[var(--navy-dark)] outline-none transition focus:border-[rgba(32,157,215,0.34)]"
+                    required
+                    autoComplete="new-password"
+                  />
+                </label>
+
+                {authError ? (
+                  <p className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600" role="alert">
+                    {authError}
+                  </p>
+                ) : null}
+
+                <button
+                  type="submit"
+                  className="w-full rounded-full bg-[linear-gradient(135deg,_var(--secondary-purple),_#9157a9)] px-4 py-3 text-xs font-semibold uppercase tracking-[0.24em] text-white transition hover:-translate-y-0.5 hover:shadow-[0_18px_30px_rgba(117,57,145,0.25)] disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={isSubmitting}
+                >
+                  {isSubmitting ? "Creating account..." : "Create account"}
+                </button>
+              </form>
+            </>
+          )}
         </section>
       </section>
     </main>

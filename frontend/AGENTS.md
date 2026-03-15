@@ -19,23 +19,32 @@ This file defines the current frontend baseline in `pm/frontend/`. Use it as the
 
 - App entrypoint at `src/app/page.tsx` renders `AppShell`.
 - `AppShell` checks `GET /api/session` and gates access to the board.
-- Login uses hardcoded credentials via backend API:
+- Authentication uses backend account APIs:
+  - `POST /api/signup`
   - `POST /api/login`
   - `POST /api/logout`
-- Board data source is backend API:
-  - `GET /api/board` on authenticated load
+- Workspaces use backend API:
+  - `GET /api/workspaces`
+  - `POST /api/workspaces`
+  - `PATCH /api/workspaces/{id}`
+  - `DELETE /api/workspaces/{id}`
+- Board data source is backend API scoped to the selected workspace:
+  - `GET /api/board?workspaceId=...` on authenticated load
   - `PUT /api/board` after board interactions
 - AI chat data source is backend API:
-  - `POST /api/chat` with `message` + `history`
-  - Returns `message`, `operations`, `board`, `version`
-- Current UX is a single-board Kanban experience with five columns.
+  - `POST /api/chat` with `workspaceId` + `message` + `history`
+  - Returns `message`, `operations`, `workspaces`, `selectedWorkspaceId`, `board`, `version`
+- Current UX is a multi-workspace Kanban experience with one board per workspace.
 - Supported in current UI:
+  - Sign up with full name, username, email, and password
+  - Sign in with email or username and password
+  - Create, rename, switch, and delete workspaces
   - Rename column titles inline
   - Add cards (title + optional details)
   - Delete cards
   - Move cards within and across columns with drag-and-drop
   - Chat with AI assistant in sidebar
-  - Apply AI-returned board operations automatically to current board
+  - Apply AI-returned card, column, and workspace operations automatically to current board/workspace list
   - Show chat errors without breaking board interactions
 - Board state displayed in UI is backend-backed (SQLite via backend API) once user signs in.
 
@@ -54,6 +63,20 @@ Defined in `src/lib/kanban.ts`:
 - `BoardData`
   - `columns: Column[]`
   - `cards: Record<string, Card>`
+
+Auth/session shape from the backend:
+
+- `SessionResponse`
+  - `authenticated: boolean`
+  - `user: { id: number, fullName: string, username: string, email: string } | null`
+
+Workspace shape from the backend:
+
+- `Workspace`
+  - `id: number`
+  - `name: string`
+  - `createdAt: string`
+  - `updatedAt: string`
 
 Utility behavior currently includes:
 
@@ -75,7 +98,8 @@ Utility behavior currently includes:
 Current tested behaviors include:
 
 - Login screen when unauthenticated
-- Successful sign-in and logout flow
+- Successful account creation, sign-in, and logout flow
+- Workspace creation and switching
 - Board persistence through backend-backed save/load
 - AI chat request/response rendering and board auto-update
 - Rendering board/columns
@@ -89,8 +113,10 @@ Current tested behaviors include:
 - Preserve current Kanban behavior unless a phase in `pm/docs/PLAN.md` explicitly changes it.
 - Do not invent backend-auth or persistence behavior in frontend-only phases.
 - Keep frontend API integration aligned with planned backend endpoints:
+  - `/api/signup`
   - `/api/login`
   - `/api/logout`
+  - `/api/workspaces`
   - `/api/board`
   - `/api/chat`
 - If frontend architecture or behavior changes, update this file in the same change set.

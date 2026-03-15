@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 
 import {
   closestCorners,
@@ -28,14 +28,28 @@ import {
   type BoardData,
 } from "@/lib/kanban";
 
+type WorkspaceSummary = {
+  id: number;
+  name: string;
+};
+
 type KanbanBoardProps = {
   onLogout?: () => void;
   username?: string | null;
+  displayName?: string | null;
   board?: BoardData;
   onBoardChange?: (nextBoard: BoardData) => void;
   boardError?: string | null;
   isSavingBoard?: boolean;
   chatSidebar?: ReactNode;
+  workspaces?: WorkspaceSummary[];
+  activeWorkspaceId?: number | null;
+  onSelectWorkspace?: (workspaceId: number) => void;
+  onCreateWorkspace?: (name: string) => void;
+  onRenameWorkspace?: (workspaceId: number, name: string) => void;
+  onDeleteWorkspace?: (workspaceId: number) => void;
+  isManagingWorkspaces?: boolean;
+  workspaceError?: string | null;
 };
 
 const cloneBoard = (source: BoardData): BoardData => ({
@@ -54,18 +68,39 @@ const columnAccentMap: Record<string, string> = {
 export const KanbanBoard = ({
   onLogout,
   username,
+  displayName,
   board,
   onBoardChange,
   boardError,
   isSavingBoard,
   chatSidebar,
+  workspaces,
+  activeWorkspaceId,
+  onSelectWorkspace,
+  onCreateWorkspace,
+  onRenameWorkspace,
+  onDeleteWorkspace,
+  isManagingWorkspaces,
+  workspaceError,
 }: KanbanBoardProps) => {
   const [localBoard, setLocalBoard] = useState<BoardData>(() => cloneBoard(initialData));
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
   const [isAgentOpen, setIsAgentOpen] = useState(false);
+  const [workspaceFormMode, setWorkspaceFormMode] = useState<"create" | "rename" | null>(null);
+  const [workspaceNameDraft, setWorkspaceNameDraft] = useState("");
   const lastOverIdRef = useRef<string | null>(null);
   const currentBoard = board ?? localBoard;
   const onChange = onBoardChange ?? setLocalBoard;
+  const currentWorkspace =
+    workspaces?.find((workspace) => workspace.id === activeWorkspaceId) ?? null;
+  const canManageWorkspaces = Boolean(
+    workspaces &&
+      onSelectWorkspace &&
+      onCreateWorkspace &&
+      onRenameWorkspace &&
+      onDeleteWorkspace &&
+      activeWorkspaceId
+  );
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -81,6 +116,17 @@ export const KanbanBoard = ({
   const busiestColumn = [...currentBoard.columns].sort(
     (left, right) => right.cardIds.length - left.cardIds.length
   )[0];
+
+  useEffect(() => {
+    if (workspaceFormMode === "rename") {
+      setWorkspaceNameDraft(currentWorkspace?.name ?? "");
+      return;
+    }
+
+    if (workspaceFormMode === null) {
+      setWorkspaceNameDraft("");
+    }
+  }, [currentWorkspace?.name, workspaceFormMode]);
 
   const collisionDetection: CollisionDetection = (args) => {
     const pointerCollisions = pointerWithin(args);
@@ -137,9 +183,7 @@ export const KanbanBoard = ({
         [id]: { id, title, details: details || "No details yet." },
       },
       columns: currentBoard.columns.map((column) =>
-        column.id === columnId
-          ? { ...column, cardIds: [...column.cardIds, id] }
-          : column
+        column.id === columnId ? { ...column, cardIds: [...column.cardIds, id] } : column
       ),
     };
     onChange(nextBoard);
@@ -179,6 +223,25 @@ export const KanbanBoard = ({
     onChange(nextBoard);
   };
 
+  const handleWorkspaceSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const trimmedName = workspaceNameDraft.trim();
+    if (!trimmedName) {
+      return;
+    }
+
+    if (workspaceFormMode === "create" && onCreateWorkspace) {
+      onCreateWorkspace(trimmedName);
+      setWorkspaceFormMode(null);
+      return;
+    }
+
+    if (workspaceFormMode === "rename" && activeWorkspaceId && onRenameWorkspace) {
+      onRenameWorkspace(activeWorkspaceId, trimmedName);
+      setWorkspaceFormMode(null);
+    }
+  };
+
   const activeCard = activeCardId ? cardsById[activeCardId] : null;
 
   return (
@@ -193,10 +256,10 @@ export const KanbanBoard = ({
             <div className="space-y-6">
               <div className="flex flex-wrap items-center gap-3">
                 <span className="rounded-full border border-[rgba(3,33,71,0.08)] bg-[rgba(255,255,255,0.8)] px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.35em] text-[var(--gray-text)]">
-                  Single Board Kanban
+                  Multi-workspace Kanban
                 </span>
                 <span className="rounded-full bg-[rgba(236,173,10,0.15)] px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--navy-dark)]">
-                  Command Center
+                  Commercial Workspace
                 </span>
               </div>
 
@@ -205,9 +268,9 @@ export const KanbanBoard = ({
                   Kanban Studio
                 </h1>
                 <p className="mt-4 max-w-2xl text-sm leading-7 text-[var(--gray-text)] sm:text-[15px]">
-                  A brighter control room for the project. Lanes can grow or shrink with the work,
-                  cards stay tactile, and the AI helper is available on demand instead of owning a
-                  permanent slice of the layout.
+                  Organize delivery work by workspace, keep board operations responsive, and let
+                  the AI assistant act inside the active workspace instead of a single shared demo
+                  board.
                 </p>
               </div>
 
@@ -254,10 +317,10 @@ export const KanbanBoard = ({
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-[var(--gray-text)]">
-                    Focus
+                    Workspace
                   </p>
                   <p className="mt-2 font-display text-2xl font-semibold text-[var(--navy-dark)]">
-                    One board. Flexible lanes.
+                    {currentWorkspace?.name ?? "Board operations"}
                   </p>
                 </div>
                 <div className="rounded-full bg-[rgba(32,157,215,0.14)] px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--primary-blue)]">
@@ -268,6 +331,12 @@ export const KanbanBoard = ({
               <div className="mt-5 space-y-3 text-sm text-[var(--gray-text)]">
                 <div className="flex items-center justify-between rounded-2xl bg-[rgba(3,33,71,0.04)] px-4 py-3">
                   <span>Signed in</span>
+                  <span className="font-semibold text-[var(--navy-dark)]">
+                    {displayName ?? username ?? "Guest"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between rounded-2xl bg-[rgba(3,33,71,0.04)] px-4 py-3">
+                  <span>Account</span>
                   <span className="font-semibold text-[var(--navy-dark)]">{username ?? "Guest"}</span>
                 </div>
                 <div className="flex items-center justify-between rounded-2xl bg-[rgba(3,33,71,0.04)] px-4 py-3">
@@ -295,6 +364,121 @@ export const KanbanBoard = ({
               ) : null}
             </div>
           </div>
+
+          {canManageWorkspaces ? (
+            <section className="relative z-10 mt-6 rounded-[30px] border border-[rgba(3,33,71,0.08)] bg-[rgba(255,255,255,0.74)] p-5 shadow-[0_18px_40px_rgba(3,33,71,0.08)]">
+              <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-[var(--gray-text)]">
+                    Workspaces
+                  </p>
+                  <p className="mt-2 max-w-2xl text-sm leading-7 text-[var(--gray-text)]">
+                    Separate initiatives into dedicated workspaces. Each workspace keeps its own
+                    board data and AI activity.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setWorkspaceFormMode("create");
+                      setWorkspaceNameDraft("");
+                    }}
+                    className="rounded-full bg-[linear-gradient(135deg,_var(--primary-blue),_#5dbbe4)] px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.24em] text-white shadow-[0_14px_24px_rgba(32,157,215,0.24)] transition hover:-translate-y-0.5"
+                  >
+                    Create workspace
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setWorkspaceFormMode("rename");
+                      setWorkspaceNameDraft(currentWorkspace?.name ?? "");
+                    }}
+                    disabled={!activeWorkspaceId}
+                    className="rounded-full border border-[rgba(3,33,71,0.12)] bg-white px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--navy-dark)] transition hover:-translate-y-0.5 hover:border-[var(--primary-blue)] hover:text-[var(--primary-blue)] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Rename current workspace
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (activeWorkspaceId && onDeleteWorkspace) {
+                        onDeleteWorkspace(activeWorkspaceId);
+                        setWorkspaceFormMode(null);
+                      }
+                    }}
+                    disabled={(workspaces?.length ?? 0) <= 1}
+                    className="rounded-full border border-[rgba(117,57,145,0.18)] bg-[rgba(117,57,145,0.08)] px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--secondary-purple)] transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Delete current workspace
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-5 flex flex-wrap gap-3">
+                {workspaces?.map((workspace) => {
+                  const isActive = workspace.id === activeWorkspaceId;
+
+                  return (
+                    <button
+                      key={workspace.id}
+                      type="button"
+                      onClick={() => onSelectWorkspace?.(workspace.id)}
+                      className={`rounded-full border px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.22em] transition ${
+                        isActive
+                          ? "border-[rgba(32,157,215,0.2)] bg-[rgba(32,157,215,0.14)] text-[var(--primary-blue)] shadow-[0_16px_28px_rgba(32,157,215,0.18)]"
+                          : "border-[rgba(3,33,71,0.08)] bg-[rgba(255,255,255,0.86)] text-[var(--navy-dark)] hover:border-[rgba(32,157,215,0.24)] hover:text-[var(--primary-blue)]"
+                      }`}
+                    >
+                      {workspace.name}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {workspaceFormMode ? (
+                <form
+                  onSubmit={handleWorkspaceSubmit}
+                  className="mt-5 grid gap-3 rounded-[24px] border border-[rgba(3,33,71,0.08)] bg-[rgba(248,251,255,0.76)] p-4 md:grid-cols-[minmax(0,1fr)_auto_auto]"
+                >
+                  <label className="block text-xs font-semibold uppercase tracking-[0.22em] text-[var(--gray-text)]">
+                    Workspace name
+                    <input
+                      value={workspaceNameDraft}
+                      onChange={(event) => setWorkspaceNameDraft(event.target.value)}
+                      className="mt-3 w-full rounded-[18px] border border-[rgba(3,33,71,0.08)] bg-white px-4 py-3 text-sm font-medium text-[var(--navy-dark)] outline-none transition focus:border-[rgba(32,157,215,0.34)]"
+                      aria-label="Workspace name"
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    disabled={Boolean(isManagingWorkspaces)}
+                    className="self-end rounded-full bg-[linear-gradient(135deg,_var(--secondary-purple),_#9157a9)] px-4 py-3 text-xs font-semibold uppercase tracking-[0.24em] text-white transition hover:-translate-y-0.5 hover:shadow-[0_18px_30px_rgba(117,57,145,0.25)] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isManagingWorkspaces
+                      ? "Saving..."
+                      : workspaceFormMode === "create"
+                        ? "Create"
+                        : "Rename"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setWorkspaceFormMode(null)}
+                    className="self-end rounded-full border border-[rgba(3,33,71,0.12)] bg-white px-4 py-3 text-xs font-semibold uppercase tracking-[0.24em] text-[var(--navy-dark)] transition hover:-translate-y-0.5 hover:border-[var(--primary-blue)] hover:text-[var(--primary-blue)]"
+                  >
+                    Cancel
+                  </button>
+                </form>
+              ) : null}
+
+              {workspaceError ? (
+                <p className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600" role="alert">
+                  {workspaceError}
+                </p>
+              ) : null}
+            </section>
+          ) : null}
 
           {boardError ? (
             <p className="relative z-10 mt-5 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600" role="alert">

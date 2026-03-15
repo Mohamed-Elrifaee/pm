@@ -8,7 +8,16 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from app.ai_client import request_chat_completion
-from app.board_store import get_or_create_board_for_user, save_board_for_user
+from app.board_store import (
+    WorkspaceConflictError,
+    WorkspaceDeletionError,
+    WorkspaceNotFoundError,
+    create_workspace_for_user,
+    delete_workspace_for_user,
+    get_or_create_board_for_workspace,
+    list_workspaces_for_user,
+    save_board_for_workspace,
+)
 
 MAX_HISTORY_MESSAGES = 12
 
@@ -58,8 +67,39 @@ class DeleteOperation(BaseModel):
     cardId: str = Field(min_length=1)
 
 
+class CreateColumnOperation(BaseModel):
+    type: Literal["create_column"]
+    title: str = Field(min_length=1)
+    index: int | None = None
+
+
+class DeleteColumnOperation(BaseModel):
+    type: Literal["delete_column"]
+    columnId: str = Field(min_length=1)
+    targetColumnId: str | None = None
+
+
+class CreateWorkspaceOperation(BaseModel):
+    type: Literal["create_workspace"]
+    name: str = Field(min_length=2)
+
+
+class DeleteWorkspaceOperation(BaseModel):
+    type: Literal["delete_workspace"]
+    workspaceId: int | None = Field(default=None, ge=1)
+
+
+BoardOperationModel = (
+    CreateOperation
+    | EditOperation
+    | MoveOperation
+    | DeleteOperation
+    | CreateColumnOperation
+    | DeleteColumnOperation
+)
+
 OperationModel = Annotated[
-    CreateOperation | EditOperation | MoveOperation | DeleteOperation,
+    BoardOperationModel | CreateWorkspaceOperation | DeleteWorkspaceOperation,
     Field(discriminator="type"),
 ]
 
@@ -70,38 +110,56 @@ class StructuredAIResponse(BaseModel):
 
 
 def process_chat_request(
-    username: str,
+    user_id: int,
+    workspace_id: int,
     user_message: str,
     history: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    board, current_version = get_or_create_board_for_user(username)
-    prompt = build_chat_prompt(board, user_message, history or [])
+    workspaces = list_workspaces_for_user(user_id)
+    board, current_version = get_or_create_board_for_workspace(user_id, workspace_id)
+    prompt = build_chat_prompt(workspaces, workspace_id, board, user_message, history or [])
     raw_response = request_chat_completion(prompt)
     structured = parse_structured_ai_response(raw_response)
 
-    updated_board, applied_operations = apply_operations(board, structured.operations)
-
-    next_version = current_version
-    if applied_operations:
-        next_version = save_board_for_user(username, updated_board)
+    (
+        updated_workspaces,
+        selected_workspace_id,
+        updated_board,
+        next_version,
+        applied_operations,
+    ) = execute_operations(
+        user_id=user_id,
+        workspace_id=workspace_id,
+        board=board,
+        current_version=current_version,
+        operations=structured.operations,
+    )
 
     return {
         "message": structured.message,
         "operations": applied_operations,
+        "workspaces": updated_workspaces,
+        "selectedWorkspaceId": selected_workspace_id,
         "board": updated_board,
         "version": next_version,
     }
 
 
 def build_chat_prompt(
+    workspaces: list[dict[str, Any]],
+    current_workspace_id: int,
     board: dict[str, Any],
     user_message: str,
     history: list[dict[str, str]],
 ) -> str:
     trimmed_history = history[-MAX_HISTORY_MESSAGES:]
+    current_workspace = next(
+        (workspace for workspace in workspaces if int(workspace["id"]) == current_workspace_id),
+        None,
+    )
 
     instructions = (
-        "You are a project management assistant for a Kanban board.\n"
+        "You are a project management assistant for a Kanban workspace.\n"
         "Return ONLY valid JSON with this exact shape:\n"
         '{"message":"assistant text","operations":[...]}'
         "\n"
@@ -110,15 +168,25 @@ def build_chat_prompt(
         '- {"type":"edit","cardId":"...","title":"...","details":"..."}\n'
         '- {"type":"move","cardId":"...","columnId":"...","index":0}\n'
         '- {"type":"delete","cardId":"..."}\n'
+        '- {"type":"create_column","title":"...","index":0}\n'
+        '- {"type":"delete_column","columnId":"...","targetColumnId":"..."}\n'
+        '- {"type":"create_workspace","name":"..."}\n'
+        '- {"type":"delete_workspace","workspaceId":1}\n'
         "Rules:\n"
-        "- Use only cards and columns that exist in the board unless creating a new card.\n"
+        "- Card and column operations apply only to the current workspace.\n"
+        "- Creating a workspace does not switch the active workspace.\n"
+        "- Deleting the current workspace switches to the fallback workspace returned by the app.\n"
+        "- Use only workspace ids, column ids, and card ids that already exist unless creating one.\n"
+        "- Do not delete the last workspace or the last column.\n"
         "- Do not include markdown or code fences.\n"
-        "- If no board change is needed, return operations as an empty array.\n"
+        "- If no app change is needed, return operations as an empty array.\n"
         "- Keep message concise and clear.\n"
     )
 
     return (
         f"{instructions}\n"
+        f"Current workspace:\n{json.dumps(current_workspace, ensure_ascii=True)}\n\n"
+        f"All workspaces JSON:\n{json.dumps(workspaces, ensure_ascii=True)}\n\n"
         f"Current board JSON:\n{json.dumps(board, ensure_ascii=True)}\n\n"
         f"Conversation history JSON:\n{json.dumps(trimmed_history, ensure_ascii=True)}\n\n"
         f"Latest user message:\n{user_message}"
@@ -142,19 +210,111 @@ def apply_operations(
 
     applied_operations: list[dict[str, Any]] = []
     for operation in operations:
-        if isinstance(operation, CreateOperation):
-            applied_operations.append(_apply_create(updated_board, operation))
-        elif isinstance(operation, EditOperation):
-            applied_operations.append(_apply_edit(updated_board, operation))
-        elif isinstance(operation, MoveOperation):
-            applied_operations.append(_apply_move(updated_board, operation))
-        elif isinstance(operation, DeleteOperation):
-            applied_operations.append(_apply_delete(updated_board, operation))
-        else:
-            raise ChatOperationError("Unsupported operation type.")
+        if isinstance(operation, (CreateWorkspaceOperation, DeleteWorkspaceOperation)):
+            raise ChatOperationError("Workspace operations require persisted workspace context.")
+        applied_operations.append(_apply_board_operation(updated_board, operation))
 
     _assert_board_integrity(updated_board)
     return updated_board, applied_operations
+
+
+def execute_operations(
+    user_id: int,
+    workspace_id: int,
+    board: dict[str, Any],
+    current_version: int,
+    operations: list[OperationModel],
+) -> tuple[list[dict[str, Any]], int, dict[str, Any], int, list[dict[str, Any]]]:
+    workspaces = list_workspaces_for_user(user_id)
+    selected_workspace_id = workspace_id
+    active_board = copy.deepcopy(board)
+    active_version = current_version
+    board_dirty = False
+    applied_operations: list[dict[str, Any]] = []
+
+    _assert_board_integrity(active_board)
+
+    for operation in operations:
+        if isinstance(operation, (CreateWorkspaceOperation, DeleteWorkspaceOperation)):
+            if board_dirty:
+                active_version = save_board_for_workspace(
+                    user_id,
+                    selected_workspace_id,
+                    active_board,
+                    active_version,
+                )
+                board_dirty = False
+
+            try:
+                if isinstance(operation, CreateWorkspaceOperation):
+                    workspace = create_workspace_for_user(user_id, operation.name)
+                    workspaces = list_workspaces_for_user(user_id)
+                    applied_operations.append(
+                        {
+                            "type": "create_workspace",
+                            "workspaceId": int(workspace["id"]),
+                            "name": workspace["name"],
+                        }
+                    )
+                else:
+                    target_workspace_id = operation.workspaceId or selected_workspace_id
+                    workspaces, fallback_workspace_id = delete_workspace_for_user(
+                        user_id,
+                        target_workspace_id,
+                    )
+                    if target_workspace_id == selected_workspace_id:
+                        selected_workspace_id = fallback_workspace_id
+                        active_board, active_version = get_or_create_board_for_workspace(
+                            user_id,
+                            selected_workspace_id,
+                        )
+                    applied_operations.append(
+                        {
+                            "type": "delete_workspace",
+                            "workspaceId": target_workspace_id,
+                            "selectedWorkspaceId": selected_workspace_id,
+                        }
+                    )
+            except (
+                WorkspaceConflictError,
+                WorkspaceDeletionError,
+                WorkspaceNotFoundError,
+            ) as error:
+                raise ChatOperationError(str(error)) from error
+
+            continue
+
+        applied_operations.append(_apply_board_operation(active_board, operation))
+        board_dirty = True
+
+    if board_dirty:
+        active_version = save_board_for_workspace(
+            user_id,
+            selected_workspace_id,
+            active_board,
+            active_version,
+        )
+
+    return workspaces, selected_workspace_id, active_board, active_version, applied_operations
+
+
+def _apply_board_operation(
+    board: dict[str, Any],
+    operation: BoardOperationModel,
+) -> dict[str, Any]:
+    if isinstance(operation, CreateOperation):
+        return _apply_create(board, operation)
+    if isinstance(operation, EditOperation):
+        return _apply_edit(board, operation)
+    if isinstance(operation, MoveOperation):
+        return _apply_move(board, operation)
+    if isinstance(operation, DeleteOperation):
+        return _apply_delete(board, operation)
+    if isinstance(operation, CreateColumnOperation):
+        return _apply_create_column(board, operation)
+    if isinstance(operation, DeleteColumnOperation):
+        return _apply_delete_column(board, operation)
+    raise ChatOperationError("Unsupported operation type.")
 
 
 def _extract_json_payload(raw_response: str) -> dict[str, Any]:
@@ -264,11 +424,78 @@ def _apply_delete(board: dict[str, Any], operation: DeleteOperation) -> dict[str
     return {"type": "delete", "cardId": operation.cardId}
 
 
+def _apply_create_column(board: dict[str, Any], operation: CreateColumnOperation) -> dict[str, Any]:
+    column_id = _generate_column_id(board)
+    insert_index = _normalize_insert_index(operation.index, len(board["columns"]))
+    board["columns"].insert(
+        insert_index,
+        {
+            "id": column_id,
+            "title": operation.title,
+            "cardIds": [],
+        },
+    )
+    return {
+        "type": "create_column",
+        "columnId": column_id,
+        "title": operation.title,
+        "index": insert_index,
+    }
+
+
+def _apply_delete_column(board: dict[str, Any], operation: DeleteColumnOperation) -> dict[str, Any]:
+    columns = board["columns"]
+    if len(columns) <= 1:
+        raise ChatOperationError("Cannot delete the last column.")
+
+    column_index = next(
+        (index for index, column in enumerate(columns) if column.get("id") == operation.columnId),
+        -1,
+    )
+    if column_index == -1:
+        raise ChatOperationError(f"Unknown column '{operation.columnId}'.")
+
+    removed_column = columns[column_index]
+    if operation.targetColumnId is not None:
+        if operation.targetColumnId == operation.columnId:
+            raise ChatOperationError("targetColumnId must be different from columnId.")
+        recipient_column = _get_column_or_raise(board, operation.targetColumnId)
+        recipient_column["cardIds"].extend(removed_column["cardIds"])
+        recipient_column_id = operation.targetColumnId
+    else:
+        if column_index == 0:
+            recipient_column = columns[1]
+            recipient_column["cardIds"] = [
+                *removed_column["cardIds"],
+                *recipient_column["cardIds"],
+            ]
+        else:
+            recipient_column = columns[column_index - 1]
+            recipient_column["cardIds"].extend(removed_column["cardIds"])
+        recipient_column_id = str(recipient_column["id"])
+
+    board["columns"] = [column for column in columns if column.get("id") != operation.columnId]
+
+    return {
+        "type": "delete_column",
+        "columnId": operation.columnId,
+        "targetColumnId": recipient_column_id,
+    }
+
+
 def _generate_card_id(board: dict[str, Any]) -> str:
     cards = board["cards"]
     while True:
         candidate = f"card-{uuid.uuid4().hex[:8]}"
         if candidate not in cards:
+            return candidate
+
+
+def _generate_column_id(board: dict[str, Any]) -> str:
+    column_ids = {str(column["id"]) for column in board["columns"]}
+    while True:
+        candidate = f"col-{uuid.uuid4().hex[:8]}"
+        if candidate not in column_ids:
             return candidate
 
 

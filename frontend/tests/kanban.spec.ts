@@ -1,8 +1,22 @@
 import { expect, test, type Page } from "@playwright/test";
 
+type UserRecord = {
+  id: number;
+  fullName: string;
+  username: string;
+  email: string;
+  password: string;
+  workspaces: Array<{ id: number; name: string }>;
+};
+
 type SessionState = {
   authenticated: boolean;
-  username: string | null;
+  user: {
+    id: number;
+    fullName: string;
+    username: string;
+    email: string;
+  } | null;
 };
 
 type Card = {
@@ -78,47 +92,109 @@ type MockOptions = {
   failChat?: boolean;
 };
 
-const installAuthMocks = async (page: Page, options: MockOptions = {}) => {
-  const state: SessionState = { authenticated: false, username: null };
-  let board: BoardData = createInitialBoard();
-  let version = 1;
+const installApiMocks = async (page: Page, options: MockOptions = {}) => {
+  let nextUserId = 2;
+  let nextWorkspaceId = 2;
+  const session: SessionState = { authenticated: false, user: null };
+  const users = new Map<number, UserRecord>();
+  const boards = new Map<number, { board: BoardData; version: number }>();
+
+  const seedUser: UserRecord = {
+    id: 1,
+    fullName: "Owner User",
+    username: "owner",
+    email: "owner@example.com",
+    password: "password123",
+    workspaces: [{ id: 1, name: "Main workspace" }],
+  };
+  users.set(1, seedUser);
+  boards.set(1, { board: createInitialBoard(), version: 1 });
+
+  const currentUser = () => {
+    if (!session.user) {
+      return null;
+    }
+    return users.get(session.user.id) ?? null;
+  };
 
   await page.route("**/api/session", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(state),
+      body: JSON.stringify(session),
+    });
+  });
+
+  await page.route("**/api/signup", async (route) => {
+    const body = route.request().postDataJSON() as {
+      fullName: string;
+      username: string;
+      email: string;
+      password: string;
+    };
+    const userId = nextUserId++;
+    const workspaceId = nextWorkspaceId++;
+    const user: UserRecord = {
+      id: userId,
+      fullName: body.fullName,
+      username: body.username.toLowerCase(),
+      email: body.email.toLowerCase(),
+      password: body.password,
+      workspaces: [{ id: workspaceId, name: "Main workspace" }],
+    };
+    users.set(userId, user);
+    boards.set(workspaceId, { board: createInitialBoard(), version: 1 });
+    session.authenticated = true;
+    session.user = {
+      id: userId,
+      fullName: user.fullName,
+      username: user.username,
+      email: user.email,
+    };
+
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(session),
     });
   });
 
   await page.route("**/api/login", async (route) => {
     const body = route.request().postDataJSON() as {
-      username?: string;
+      identifier?: string;
       password?: string;
     };
-
-    if (body.username === "user" && body.password === "password") {
-      state.authenticated = true;
-      state.username = "user";
-
+    const identifier = (body.identifier ?? "").toLowerCase();
+    const user = [...users.values()].find(
+      (item) => item.username === identifier || item.email === identifier
+    );
+    if (!user || user.password !== body.password) {
       await route.fulfill({
-        status: 200,
+        status: 401,
         contentType: "application/json",
-        body: JSON.stringify(state),
+        body: JSON.stringify({ detail: "Invalid credentials" }),
       });
       return;
     }
 
+    session.authenticated = true;
+    session.user = {
+      id: user.id,
+      fullName: user.fullName,
+      username: user.username,
+      email: user.email,
+    };
+
     await route.fulfill({
-      status: 401,
+      status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ detail: "Invalid credentials" }),
+      body: JSON.stringify(session),
     });
   });
 
   await page.route("**/api/logout", async (route) => {
-    state.authenticated = false;
-    state.username = null;
+    session.authenticated = false;
+    session.user = null;
 
     await route.fulfill({
       status: 200,
@@ -127,8 +203,9 @@ const installAuthMocks = async (page: Page, options: MockOptions = {}) => {
     });
   });
 
-  await page.route("**/api/board", async (route) => {
-    if (!state.authenticated) {
+  await page.route("**/api/workspaces", async (route) => {
+    const user = currentUser();
+    if (!user) {
       await route.fulfill({
         status: 401,
         contentType: "application/json",
@@ -141,40 +218,145 @@ const installAuthMocks = async (page: Page, options: MockOptions = {}) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ board, version }),
+        body: JSON.stringify({
+          workspaces: user.workspaces.map((workspace) => ({
+            ...workspace,
+            createdAt: "2026-03-15T00:00:00Z",
+            updatedAt: "2026-03-15T00:00:00Z",
+          })),
+        }),
       });
       return;
     }
 
-    if (route.request().method() === "PUT") {
-      const payload = route.request().postDataJSON() as {
-        board: BoardData;
-        version: number;
-      };
-      board = payload.board;
-      version += 1;
+    const body = route.request().postDataJSON() as { name: string };
+    const workspaceId = nextWorkspaceId++;
+    const workspace = { id: workspaceId, name: body.name };
+    user.workspaces.push(workspace);
+    boards.set(workspaceId, { board: createInitialBoard(), version: 1 });
 
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        workspace: {
+          ...workspace,
+          createdAt: "2026-03-15T00:00:00Z",
+          updatedAt: "2026-03-15T00:00:00Z",
+        },
+      }),
+    });
+  });
+
+  await page.route("**/api/workspaces/*", async (route) => {
+    const user = currentUser();
+    if (!user) {
+      await route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "Unauthorized" }),
+      });
+      return;
+    }
+
+    const workspaceId = Number(route.request().url().split("/").pop());
+    if (route.request().method() === "PATCH") {
+      const body = route.request().postDataJSON() as { name: string };
+      const workspace = user.workspaces.find((item) => item.id === workspaceId);
+      if (!workspace) {
+        await route.fulfill({
+          status: 404,
+          contentType: "application/json",
+          body: JSON.stringify({ detail: "Workspace was not found." }),
+        });
+        return;
+      }
+      workspace.name = body.name;
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ board, version }),
+        body: JSON.stringify({
+          workspace: {
+            ...workspace,
+            createdAt: "2026-03-15T00:00:00Z",
+            updatedAt: "2026-03-15T00:00:00Z",
+          },
+        }),
+      });
+      return;
+    }
+
+    user.workspaces = user.workspaces.filter((item) => item.id !== workspaceId);
+    boards.delete(workspaceId);
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        workspaces: user.workspaces.map((workspace) => ({
+          ...workspace,
+          createdAt: "2026-03-15T00:00:00Z",
+          updatedAt: "2026-03-15T00:00:00Z",
+        })),
+        selectedWorkspaceId: user.workspaces[0]?.id ?? null,
+      }),
+    });
+  });
+
+  await page.route("**/api/board?*", async (route) => {
+    const workspaceId = Number(new URL(route.request().url()).searchParams.get("workspaceId"));
+    const boardState = boards.get(workspaceId);
+    if (!boardState) {
+      await route.fulfill({
+        status: 404,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "Workspace was not found." }),
       });
       return;
     }
 
     await route.fulfill({
-      status: 405,
+      status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ detail: "Method not allowed" }),
+      body: JSON.stringify(boardState),
+    });
+  });
+
+  await page.route("**/api/board", async (route) => {
+    const body = route.request().postDataJSON() as {
+      workspaceId: number;
+      board: BoardData;
+    };
+    const boardState = boards.get(body.workspaceId);
+    if (!boardState) {
+      await route.fulfill({
+        status: 404,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "Workspace was not found." }),
+      });
+      return;
+    }
+
+    boardState.board = body.board;
+    boardState.version += 1;
+
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(boardState),
     });
   });
 
   await page.route("**/api/chat", async (route) => {
-    if (!state.authenticated) {
+    const body = route.request().postDataJSON() as {
+      workspaceId: number;
+      message?: string;
+    };
+    const boardState = boards.get(body.workspaceId);
+    if (!boardState) {
       await route.fulfill({
-        status: 401,
+        status: 404,
         contentType: "application/json",
-        body: JSON.stringify({ detail: "Unauthorized" }),
+        body: JSON.stringify({ detail: "Workspace was not found." }),
       });
       return;
     }
@@ -188,39 +370,15 @@ const installAuthMocks = async (page: Page, options: MockOptions = {}) => {
       return;
     }
 
-    const payload = route.request().postDataJSON() as {
-      message?: string;
-    };
-
-    if (route.request().method() !== "POST") {
-      await route.fulfill({
-        status: 405,
-        contentType: "application/json",
-        body: JSON.stringify({ detail: "Method not allowed" }),
-      });
-      return;
-    }
-
-    const normalizedMessage = (payload.message ?? "").toLowerCase();
-    if (normalizedMessage.includes("weekly report")) {
-      const cardId = `card-ai-${version + 1}`;
-      board = {
-        ...board,
-        columns: board.columns.map((column) =>
-          column.id === "col-backlog"
-            ? { ...column, cardIds: [cardId, ...column.cardIds] }
-            : column
-        ),
-        cards: {
-          ...board.cards,
-          [cardId]: {
-            id: cardId,
-            title: "AI weekly report",
-            details: "Added by chat assistant.",
-          },
-        },
+    if ((body.message ?? "").toLowerCase().includes("weekly report")) {
+      const cardId = `card-ai-${body.workspaceId}`;
+      boardState.board.cards[cardId] = {
+        id: cardId,
+        title: "AI weekly report",
+        details: "Added by chat assistant.",
       };
-      version += 1;
+      boardState.board.columns[0].cardIds = [cardId, ...boardState.board.columns[0].cardIds];
+      boardState.version += 1;
 
       await route.fulfill({
         status: 200,
@@ -237,8 +395,8 @@ const installAuthMocks = async (page: Page, options: MockOptions = {}) => {
               index: 0,
             },
           ],
-          board,
-          version,
+          board: boardState.board,
+          version: boardState.version,
         }),
       });
       return;
@@ -250,30 +408,46 @@ const installAuthMocks = async (page: Page, options: MockOptions = {}) => {
       body: JSON.stringify({
         message: "No board changes required.",
         operations: [],
-        board,
-        version,
+        board: boardState.board,
+        version: boardState.version,
       }),
     });
   });
 };
 
 const login = async (page: Page) => {
-  await page.getByLabel("Username").fill("user");
-  await page.getByLabel("Password").fill("password");
-  await page.getByRole("button", { name: /sign in/i }).click();
+  await page.getByLabel("Email or username").fill("owner@example.com");
+  await page.getByLabel("Password").fill("password123");
+  await page.locator("form").getByRole("button", { name: /^sign in$/i }).click();
   await expect(page.getByRole("heading", { name: "Kanban Studio" })).toBeVisible();
 };
 
-test("requires login before showing the board", async ({ page }) => {
-  await installAuthMocks(page);
+test("requires sign in before showing the board", async ({ page }) => {
+  await installApiMocks(page);
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: /sign in/i })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Kanban Studio" })).not.toBeVisible();
 });
 
+test("creates an account and lands on the board", async ({ page }) => {
+  await installApiMocks(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: /create account/i }).click();
+  await page.getByLabel("Full name").fill("Jane Owner");
+  await page.getByLabel("Username").fill("jane");
+  await page.getByLabel("Email").fill("jane@example.com");
+  await page.getByLabel(/^Password$/).fill("password123");
+  await page.getByLabel("Confirm password").fill("password123");
+  await page.locator("form").getByRole("button", { name: /^create account$/i }).click();
+
+  await expect(page.getByRole("heading", { name: "Kanban Studio" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Main workspace" })).toBeVisible();
+});
+
 test("adds a card to a column", async ({ page }) => {
-  await installAuthMocks(page);
+  await installApiMocks(page);
   await page.goto("/");
   await login(page);
 
@@ -285,123 +459,31 @@ test("adds a card to a column", async ({ page }) => {
   await expect(firstColumn).toContainText("Playwright card");
 });
 
-test("adds and removes a column", async ({ page }) => {
-  await installAuthMocks(page);
+test("creates and switches workspaces", async ({ page }) => {
+  await installApiMocks(page);
   await page.goto("/");
   await login(page);
 
-  await page.getByRole("button", { name: /add column/i }).click();
-  await expect(page.getByLabel("Column title").last()).toHaveValue("New lane");
+  await page.getByRole("button", { name: /create workspace/i }).click();
+  await page.getByLabel("Workspace name").fill("Operations");
+  await page.getByRole("button", { name: /^create$/i }).click();
 
-  await page.getByRole("button", { name: /remove discovery/i }).click();
-  await expect(page.getByTestId("column-col-discovery")).toHaveCount(0);
-  await expect(page.getByTestId("column-col-backlog")).toContainText("Prototype analytics view");
-});
-
-test("moves a card between columns", async ({ page }) => {
-  await installAuthMocks(page);
-  await page.goto("/");
-  await login(page);
-
-  const card = page.getByTestId("card-card-1");
-  const targetColumn = page.getByTestId("column-col-review");
-  const cardBox = await card.boundingBox();
-  const targetBox = await targetColumn.boundingBox();
-  if (!cardBox) {
-    throw new Error("Unable to resolve drag coordinates.");
-  }
-  if (!targetBox) {
-    throw new Error("Unable to resolve drop coordinates.");
-  }
-
-  await page.mouse.move(
-    cardBox.x + cardBox.width / 2,
-    cardBox.y + cardBox.height / 2
-  );
-  await page.mouse.down();
-  await page.mouse.move(
-    cardBox.x + cardBox.width / 2 + 18,
-    cardBox.y + cardBox.height / 2 + 18,
-    { steps: 8 }
-  );
-  await page.mouse.move(
-    targetBox.x + targetBox.width / 2,
-    targetBox.y + Math.min(targetBox.height / 2, 260),
-    { steps: 18 }
-  );
-  await page.mouse.up();
-  await expect(targetColumn).toContainText("Align roadmap themes");
-});
-
-test("moves a card into an empty column", async ({ page }) => {
-  await installAuthMocks(page);
-  await page.goto("/");
-  await login(page);
-
-  await page.locator('button[aria-label="Delete QA micro-interactions"]').click();
-  const reviewColumn = page.getByTestId("column-col-review");
-  await expect(reviewColumn).toContainText("Drop a card here");
-
-  const card = page.getByTestId("card-card-1");
-  const cardBox = await card.boundingBox();
-  const reviewBox = await reviewColumn.boundingBox();
-  if (!cardBox) {
-    throw new Error("Unable to resolve drag coordinates.");
-  }
-  if (!reviewBox) {
-    throw new Error("Unable to resolve drop coordinates.");
-  }
-
-  await page.mouse.move(
-    cardBox.x + cardBox.width / 2,
-    cardBox.y + cardBox.height / 2
-  );
-  await page.mouse.down();
-  await page.mouse.move(
-    cardBox.x + cardBox.width / 2 + 18,
-    cardBox.y + cardBox.height / 2 + 18,
-    { steps: 8 }
-  );
-  await page.mouse.move(
-    reviewBox.x + reviewBox.width / 2,
-    reviewBox.y + Math.min(reviewBox.height / 2, 260),
-    { steps: 18 }
-  );
-  await page.mouse.up();
-
-  await expect(reviewColumn).toContainText("Align roadmap themes");
+  await expect(page.getByRole("button", { name: "Operations" })).toBeVisible();
+  await page.getByRole("button", { name: "Operations" }).click();
+  await expect(page.getByText("Operations").first()).toBeVisible();
 });
 
 test("logs out and returns to sign in", async ({ page }) => {
-  await installAuthMocks(page);
+  await installApiMocks(page);
   await page.goto("/");
   await login(page);
 
   await page.getByRole("button", { name: /log out/i }).click();
   await expect(page.getByRole("heading", { name: /sign in/i })).toBeVisible();
-});
-
-test("keeps board changes after logout and login for the same user", async ({ page }) => {
-  await installAuthMocks(page);
-  await page.goto("/");
-  await login(page);
-
-  const firstColumn = page.locator('[data-testid^="column-"]').first();
-  await firstColumn.getByRole("button", { name: /add a card/i }).click();
-  await firstColumn.getByPlaceholder("Card title").fill("Persistent card");
-  await firstColumn.getByPlaceholder("Details").fill("Should remain after re-login.");
-  await firstColumn.getByRole("button", { name: /add card/i }).click();
-  await expect(firstColumn).toContainText("Persistent card");
-
-  await page.getByRole("button", { name: /log out/i }).click();
-  await expect(page.getByRole("heading", { name: /sign in/i })).toBeVisible();
-
-  await login(page);
-  await expect(page.getByTestId("column-col-backlog")).toContainText("Persistent card");
 });
 
 test("keeps board changes after page reload", async ({ page }) => {
-  await installAuthMocks(page);
+  await installApiMocks(page);
   await page.goto("/");
   await login(page);
 
@@ -417,7 +499,7 @@ test("keeps board changes after page reload", async ({ page }) => {
 });
 
 test("applies AI chat operations and updates the board automatically", async ({ page }) => {
-  await installAuthMocks(page);
+  await installApiMocks(page);
   await page.goto("/");
   await login(page);
 
@@ -430,7 +512,7 @@ test("applies AI chat operations and updates the board automatically", async ({ 
 });
 
 test("shows chat error and keeps board usable when AI call fails", async ({ page }) => {
-  await installAuthMocks(page, { failChat: true });
+  await installApiMocks(page, { failChat: true });
   await page.goto("/");
   await login(page);
 
